@@ -34,6 +34,15 @@ Describe "Core Module Tests" {
     }
 
     Context "Initialize-Environment" {
+        It "Should use AppSettings.json as the runtime version source" {
+            $config = Get-Content (Join-Path $ProjectRoot "Config\AppSettings.json") -Raw | ConvertFrom-Json
+            $entryPoint = Get-Content (Join-Path $ProjectRoot "Win11Migrator.ps1") -Raw
+
+            $entryPoint | Should -Match "AppSettings\.json"
+            $entryPoint | Should -Not -Match "MigratorVersion\s*=\s*'\d+\.\d+\.\d+'"
+            [version]$config.Version | Should -BeGreaterThan ([version]'0.0.0')
+        }
+
         It "Should load config from AppSettings.json" {
             $config = Initialize-Environment -RootPath $ProjectRoot
             $config | Should -Not -BeNullOrEmpty
