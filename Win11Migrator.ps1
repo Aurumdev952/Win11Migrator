@@ -73,7 +73,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:MigratorRoot = $PSScriptRoot
-$script:MigratorVersion = '1.0.2'
+$script:MigratorVersion = [string](
+    Get-Content (Join-Path $script:MigratorRoot 'Config\AppSettings.json') -Raw |
+        ConvertFrom-Json
+).Version
 
 . "$script:MigratorRoot\Core\Invoke-SelfUpdate.ps1"
 if ($CheckForUpdates) {
