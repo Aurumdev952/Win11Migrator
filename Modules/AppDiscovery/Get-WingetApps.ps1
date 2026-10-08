@@ -87,6 +87,7 @@ function Get-WingetApps {
     }
 
     $apps = [System.Collections.Generic.List[MigrationApp]]::new()
+    $installableIds = Get-WingetInstallableIds
 
     # Parse data lines after the separator
     for ($i = $separatorIndex + 1; $i -lt $outputLines.Count; $i++) {
@@ -136,6 +137,7 @@ function Get-WingetApps {
         }
 
         $normalizedName = Get-NormalizedAppName -Name $appName
+        $resolvedId = Resolve-WingetListId -ListedId $appId.Trim() -ListedSource $appSrc.Trim() -InstallableIds $installableIds
 
         $app = [MigrationApp]::new()
         $app.Name              = $appName.Trim()
@@ -145,10 +147,11 @@ function Get-WingetApps {
         $app.InstallLocation   = ''
         $app.UninstallString   = ''
         $app.Source            = 'Winget'
-        $app.InstallMethod     = 'Winget'
-        $app.PackageId         = $appId.Trim()
+        # ARP\ and MSIX\ rows are only local registrations; leave them to normal resolution
+        $app.InstallMethod     = if ($resolvedId) { 'Winget' } else { '' }
+        $app.PackageId         = if ($resolvedId) { $resolvedId } else { '' }
         $app.DownloadUrl       = ''
-        $app.MatchConfidence   = 1.0
+        $app.MatchConfidence   = if ($resolvedId) { 1.0 } else { 0.0 }
         $app.Selected          = $true
         $app.InstallStatus     = 'Pending'
         $app.InstallError      = ''
@@ -158,4 +161,61 @@ function Get-WingetApps {
 
     Write-MigrationLog -Message "Winget scan complete: found $($apps.Count) applications" -Level Info
     return [MigrationApp[]]$apps.ToArray()
+}
+
+function Get-WingetInstallableIds {
+    <#
+    .SYNOPSIS
+        Package IDs `winget export` can reinstall from a source, or $null when export is unavailable.
+    #>
+    $file = Join-Path ([System.IO.Path]::GetTempPath()) "w11m_winget_$([guid]::NewGuid().ToString('N')).json"
+    try {
+        & winget export -o $file --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+        if (-not (Test-Path $file)) { return $null }
+        return ConvertFrom-WingetExport -Json (Get-Content $file -Raw)
+    } catch {
+        return $null
+    } finally {
+        Remove-Item $file -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function ConvertFrom-WingetExport {
+    param([Parameter(Mandatory)][string]$Json)
+    $ids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($source in @(($Json | ConvertFrom-Json).Sources)) {
+        foreach ($pkg in @($source.Packages)) {
+            if ($pkg.PackageIdentifier) { $null = $ids.Add($pkg.PackageIdentifier) }
+        }
+    }
+    return , $ids
+}
+
+function Resolve-WingetListId {
+    <#
+    .SYNOPSIS
+        The installable package ID behind a `winget list` row, or $null when the row cannot be reinstalled.
+    .DESCRIPTION
+        Rows without a source (ARP\..., MSIX\...) are local registrations. Long IDs are truncated with an
+        ellipsis in the table; the export list supplies the full ID.
+    #>
+    param(
+        [string]$ListedId,
+        [string]$ListedSource,
+        $InstallableIds
+    )
+    if (-not $ListedId -or $ListedId -match '^(ARP|MSIX)\\') { return $null }
+
+    if ($InstallableIds) {
+        if ($InstallableIds.Contains($ListedId)) { return $ListedId }
+        # Truncated IDs end in an ellipsis, which arrives as '...', '…' or mojibake depending on the code page
+        $prefix = ($ListedId -replace '[^\x21-\x7E]+$', '').TrimEnd('.')
+        if ($prefix -eq $ListedId -or $prefix.Length -lt 4) { return $null }
+        $candidates = @($InstallableIds | Where-Object { $_.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($candidates.Count -eq 1) { return $candidates[0] }
+        return $null
+    }
+    # Without the export list, trust only complete IDs that winget attributes to a source
+    if ($ListedSource -and $ListedId -match '^[\x21-\x7E]+$' -and -not $ListedId.EndsWith('...')) { return $ListedId }
+    return $null
 }
