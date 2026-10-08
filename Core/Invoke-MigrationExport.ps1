@@ -206,6 +206,17 @@ function Invoke-MigrationExport {
     & $setPhase 'Writing initial manifest' 2
     try { & $writeManifest $false } catch { $errors.Add("Manifest: $($_.Exception.Message)") }
 
+    if ($apps.Count -gt 0 -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+        # A list a technician can feed to `winget import` if the automated reinstall is not used
+        try {
+            $appsDir = Join-Path $PackagePath 'Apps'
+            New-Item -Path $appsDir -ItemType Directory -Force | Out-Null
+            & winget export -o (Join-Path $appsDir 'winget-packages.json') --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+        } catch {
+            Add-ProgressLog $Progress "  [WARN] winget export: $($_.Exception.Message)"
+        }
+    }
+
     & $setPhase 'Exporting user data' 5
     if ($toCopy.Count -gt 0) {
         try {

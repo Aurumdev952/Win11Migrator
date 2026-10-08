@@ -19,7 +19,7 @@
     Returns the best match with its package ID and a confidence score.
 #>
 
-function Search-WingetPackage {
+function Search-WingetPackageUncached {
     <#
     .SYNOPSIS
         Searches winget for a matching package using the normalized application name.
@@ -206,4 +206,25 @@ function Search-WingetPackage {
         Confidence  = $best.Similarity
         Source      = 'Winget'
     }
+}
+
+function Search-WingetPackage {
+    <#
+    .SYNOPSIS
+        Search-WingetPackageUncached with results cached per normalized name; several installed
+        entries often normalize to the same product, and each `winget search` costs seconds.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory)][string]$AppName,
+        [string]$NormalizedName
+    )
+    if (-not $script:WingetSearchCache) { $script:WingetSearchCache = @{} }
+    $key = if ($NormalizedName) { $NormalizedName } else { Get-NormalizedAppName -Name $AppName }
+    if (-not $key) { return Search-WingetPackageUncached -AppName $AppName -NormalizedName $NormalizedName }
+    if (-not $script:WingetSearchCache.ContainsKey($key)) {
+        $script:WingetSearchCache[$key] = Search-WingetPackageUncached -AppName $AppName -NormalizedName $key
+    }
+    return $script:WingetSearchCache[$key]
 }
