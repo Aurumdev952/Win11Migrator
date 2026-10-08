@@ -16,7 +16,7 @@ jobs:
     needs: test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install WiX Toolset
         shell: pwsh
@@ -80,7 +80,7 @@ jobs:
           }
           Get-Content dist\SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: win11migrator-${{ github.sha }}
           path: dist/*
@@ -94,7 +94,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: win11migrator-${{ github.sha }}
           path: dist
