@@ -18,17 +18,19 @@
     Pester tests for UserData and BrowserProfiles modules.
 #>
 
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
 
-Describe "UserData Module Tests" {
+Describe "UserData Module Tests" -Tag "Windows" {
 
     BeforeAll {
-        . "$ProjectRoot\Core\Initialize-Environment.ps1"
-        . "$ProjectRoot\Core\Write-MigrationLog.ps1"
+        $ProjectRoot = Split-Path $PSScriptRoot -Parent
+        . "$ProjectRoot/Core/Initialize-Environment.ps1"
+        . "$ProjectRoot/Core/Write-MigrationLog.ps1"
+        . "$ProjectRoot/Core/Invoke-Robocopy.ps1"
+        . "$ProjectRoot/Core/Get-MigrationExclusions.ps1"
         $script:MigratorRoot = $ProjectRoot
         $script:Config = Initialize-Environment -RootPath $ProjectRoot
-        Get-ChildItem "$ProjectRoot\Modules\UserData\*.ps1" | ForEach-Object { . $_.FullName }
-        Get-ChildItem "$ProjectRoot\Modules\BrowserProfiles\*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/UserData/*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/BrowserProfiles/*.ps1" | ForEach-Object { . $_.FullName }
     }
 
     Context "Get-UserProfilePaths" {
@@ -65,18 +67,11 @@ Describe "UserData Module Tests" {
     }
 
     Context "Export-UserProfile" {
-        It "Should handle empty input gracefully" {
-            $tempDir = Join-Path $env:TEMP "Win11Migrator_Test_$(Get-Random)"
-            New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
-
-            try {
-                $result = Export-UserProfile -Items @() -OutputPath $tempDir
-                $result | Should -Not -BeNullOrEmpty -Because "Should return empty array, not null"
-            } catch {
-                # Acceptable if function doesn't handle empty gracefully
-            } finally {
-                Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
+        It "Should accept an empty selection without copying anything" {
+            Mock Invoke-Robocopy { }
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "Win11Migrator_Test_$(Get-Random)"
+            { Export-UserProfile -Items @() -OutputDirectory $tempDir } | Should -Not -Throw
+            Should -Invoke Invoke-Robocopy -Times 0
         }
     }
 
