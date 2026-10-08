@@ -52,6 +52,33 @@
                             <Button x:Name="btnAddFolder" Grid.Column="1" Content="Add Folder" Padding="12,4" FontSize="12" />
                         </Grid>
                         <StackPanel x:Name="panelUserData" />
+                        <Expander Header="Excluded folders and file types" Margin="0,8,0,0">
+                            <StackPanel Margin="0,6,0,0">
+                                <TextBlock Style="{StaticResource CaptionText}" TextWrapping="Wrap" Margin="0,0,0,6"
+                                           Text="Folders with these names are skipped anywhere inside the selected folders (one per line). Caches like node_modules and .venv can be rebuilt on the new PC, so leaving them out saves time and space." />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Folder names" Style="{StaticResource CaptionText}" />
+                                        <TextBox x:Name="txtExcludeDirs" AcceptsReturn="True" Height="110" FontFamily="Consolas" FontSize="11"
+                                                 VerticalScrollBarVisibility="Auto" Padding="4" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="File patterns" Style="{StaticResource CaptionText}" />
+                                        <TextBox x:Name="txtExcludeFiles" AcceptsReturn="True" Height="110" FontFamily="Consolas" FontSize="11"
+                                                 VerticalScrollBarVisibility="Auto" Padding="4" />
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Button x:Name="btnApplyExclusions" Content="Apply and re-measure" Padding="12,4" FontSize="12" />
+                                    <Button x:Name="btnResetExclusions" Content="Restore defaults" Padding="12,4" FontSize="12" Margin="8,0,0,0" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Expander>
                     </StackPanel>
                 </Border>
 

@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    name: Build installers
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: powershell
+        run: |
+          $version = (Get-Content Config\AppSettings.json -Raw | ConvertFrom-Json).Version
+          if ('${{ github.ref_name }}' -ne "v$version") {
+            throw "Tag ${{ github.ref_name }} does not match Version $version in Config\AppSettings.json"
+          }
+
+      - name: Build
+        shell: powershell
+        env:
+          WIN11MIGRATOR_SIGN_PFX: ${{ secrets.WIN11MIGRATOR_SIGN_PFX }}
+          WIN11MIGRATOR_SIGN_PASSWORD: ${{ secrets.WIN11MIGRATOR_SIGN_PASSWORD }}
+        run: .\build\Build-Release.ps1
+
+      - name: Smoke test the MSI (install, run, uninstall)
+        shell: powershell
+        run: |
+          $msi = (Get-ChildItem dist\*.msi).FullName
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /l*v msi-install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content msi-install.log -Tail 40; throw "MSI install failed: $($p.ExitCode)" }
+          $installed = Join-Path $env:ProgramFiles 'Aurumdev952\Win11Migrator\Win11Migrator.ps1'
+          if (-not (Test-Path $installed)) { throw "Not installed at $installed" }
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Win11Migrator.lnk")) { throw 'Start menu shortcut missing' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installed -CLI status
+          if ($LASTEXITCODE -ne 0) { throw "Installed app failed: $LASTEXITCODE" }
+          $p = Start-Process msiexec.exe -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "MSI uninstall failed: $($p.ExitCode)" }
+          if (Test-Path $installed) { throw 'Uninstall left files behind' }
+
+      - name: Smoke test the portable zip and exe
+        shell: powershell
+        run: |
+          $zip = (Get-ChildItem dist\*-portable.zip).FullName
+          Expand-Archive $zip -DestinationPath portable-test
+          $script = (Get-ChildItem portable-test -Recurse -Filter Win11Migrator.ps1 | Select-Object -First 1).FullName
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -CLI status
+          if ($LASTEXITCODE -ne 0) { throw "Portable zip app failed: $LASTEXITCODE" }
+
+          $exe = (Get-ChildItem dist\*-portable.exe).FullName
+          $p = Start-Process $exe -ArgumentList '-CLI', 'status' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Portable exe failed: $($p.ExitCode)" }
+          $version = (Get-Item $exe).VersionInfo.FileVersion
+          $unpacked = Join-Path $env:LOCALAPPDATA "Win11Migrator\portable\$version\Win11Migrator.ps1"
+          if (-not (Test-Path $unpacked)) { throw "Portable exe did not unpack to $unpacked" }
+
+      - name: Show what Windows thinks of the files
+        shell: powershell
+        run: |
+          Get-ChildItem dist -File | ForEach-Object {
+            $sig = Get-AuthenticodeSignature $_.FullName
+            '{0,-45} {1}' -f $_.Name, $sig.Status
+          }
+          Get-Content dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: win11migrator-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: win11migrator-${{ github.sha }}
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "Win11Migrator ${{ github.ref_name }}" \
+            --generate-notes

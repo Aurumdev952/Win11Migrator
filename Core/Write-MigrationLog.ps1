@@ -28,6 +28,10 @@ if (-not $script:LogSessionId) {
     $script:LogSessionId = [guid]::NewGuid().ToString('N').Substring(0, 8)
 }
 
+if (-not $script:LogFileMutex) {
+    $script:LogFileMutex = [System.Threading.Mutex]::new($false, 'Win11Migrator.LogFile')
+}
+
 # Silent mode flag (set by -Silent switch)
 if (-not (Test-Path variable:script:SilentMode)) {
     $script:SilentMode = $false
@@ -57,7 +61,11 @@ function Write-MigrationLog {
                      else { $null }
 
     if ($effectivePath) {
+        # Export, import and background workers run in separate runspaces that share one log file.
+        $lockTaken = $false
         try {
+            try { $lockTaken = $script:LogFileMutex.WaitOne(2000) } catch [System.Threading.AbandonedMutexException] { $lockTaken = $true }
+
             # Determine format
             $effectiveFormat = if ($Format) { $Format }
                               elseif ($script:Config -and $script:Config.LogFormat) { $script:Config.LogFormat }
@@ -87,6 +95,8 @@ function Write-MigrationLog {
             }
         } catch {
             # Silently continue if log file is locked
+        } finally {
+            if ($lockTaken) { $script:LogFileMutex.ReleaseMutex() }
         }
     }
 
@@ -111,22 +121,27 @@ function Get-LogEntries {
         [int]$MaxEntries = 100
     )
 
-    $entries = @()
-    $count = 0
-    while ($count -lt $MaxEntries) {
-        $entry = $null
-        if ($script:LogQueue.TryDequeue([ref]$entry)) {
-            $entries += $entry
-            $count++
-        } else {
-            break
-        }
+    $entries = [System.Collections.Generic.List[string]]::new()
+    $entry = $null
+    while ($entries.Count -lt $MaxEntries -and $script:LogQueue.TryDequeue([ref]$entry)) {
+        $entries.Add($entry)
     }
-    return $entries
+    # The comma keeps a single entry an array; otherwise $entries[0] would be its first character
+    return , $entries.ToArray()
 }
 
 function Clear-LogQueue {
     while ($script:LogQueue.Count -gt 0) {
         $null = $script:LogQueue.TryDequeue([ref]$null)
     }
+}
+
+function Add-ProgressLog {
+    <#
+    .SYNOPSIS
+        Appends a line to a progress hashtable's Log (shown by the GUI) and echoes it for the CLI when Echo is set.
+    #>
+    param([hashtable]$Progress, [string]$Message)
+    if ($Progress -and $null -ne $Progress.Log) { $null = $Progress.Log.Add($Message) }
+    if ($Progress -and $Progress.Echo) { Write-Host $Message }
 }

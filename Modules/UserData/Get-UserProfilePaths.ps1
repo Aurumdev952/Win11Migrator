@@ -105,3 +105,41 @@ function Get-UserProfilePaths {
     Write-MigrationLog -Message "User profile path detection complete" -Level Success
     return $result
 }
+
+function Get-DefaultUserDataItems {
+    <#
+    .SYNOPSIS
+        UserDataItem for each standard profile folder that exists, with cloud-sync detection.
+    .PARAMETER SkipCloudSynced
+        Mark OneDrive / Google Drive folders to be left for the sync client instead of copied.
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$Folders = @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Music', 'Videos', 'Favorites'),
+        [switch]$SkipCloudSynced
+    )
+
+    $profilePaths = Get-UserProfilePaths
+    $cloudFolders = Find-CloudSyncFolders
+    $googleRoot = if ($cloudFolders.GoogleDriveAvailable -and $cloudFolders.GoogleDrivePath) { $cloudFolders.GoogleDrivePath.TrimEnd('\') } else { $null }
+
+    foreach ($folder in $Folders) {
+        $folderPath = $profilePaths[$folder]
+        if (-not $folderPath) { $folderPath = Join-Path $env:USERPROFILE $folder }
+        if (-not (Test-Path -LiteralPath $folderPath)) { continue }
+
+        $item = [UserDataItem]::new()
+        $item.SourcePath = $folderPath
+        $item.RelativePath = $folder
+        $item.Category = $folder
+        $item.Selected = $true
+        $isOneDrive = ($folderPath -match 'OneDrive')
+        $isGoogleDrive = ($googleRoot -and ($folderPath -eq $googleRoot -or $folderPath -like "$googleRoot\*"))
+        if ($isOneDrive -or $isGoogleDrive) {
+            $item.IsCloudSynced = $true
+            $item.CloudProvider = if ($isOneDrive) { 'OneDrive' } else { 'GoogleDrive' }
+            $item.SkipCloudSync = [bool]$SkipCloudSynced
+        }
+        $item
+    }
+}

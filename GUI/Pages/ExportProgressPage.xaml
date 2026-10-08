@@ -37,9 +37,13 @@
             <TextBlock x:Name="txtExportPercent" Grid.Column="1" Text="0%" Style="{StaticResource BodyText}" Width="45" />
         </Grid>
 
-        <!-- Current item -->
-        <TextBlock Grid.Row="3" x:Name="txtCurrentItem" Text=""
-                   Style="{StaticResource CaptionText}" Margin="0,0,0,16" TextTrimming="CharacterEllipsis" />
+        <!-- Current item and transfer rate -->
+        <StackPanel Grid.Row="3" Margin="0,0,0,16">
+            <TextBlock x:Name="txtCurrentItem" Text=""
+                       Style="{StaticResource CaptionText}" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="txtExportRate" Text=""
+                       Style="{StaticResource CaptionText}" Foreground="{StaticResource TextSecondaryBrush}" />
+        </StackPanel>
 
         <!-- Log viewer -->
         <Border Grid.Row="4" Style="{StaticResource CardPanel}" Padding="0" Margin="0">

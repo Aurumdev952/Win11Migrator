@@ -73,7 +73,10 @@ function ConvertTo-MigrationManifest {
 
     $json = $manifest | ConvertTo-Json -Depth 10
     $manifestFile = Join-Path $OutputPath "manifest.json"
-    Set-Content -Path $manifestFile -Value $json -Encoding UTF8
+    # Temp file then rename: a receiving PC polls for this file and must never read half of it
+    $tempFile = "$manifestFile.tmp"
+    Set-Content -Path $tempFile -Value $json -Encoding UTF8
+    Move-Item -Path $tempFile -Destination $manifestFile -Force
 
     Write-MigrationLog -Message "Manifest written to $manifestFile" -Level Success
     return $manifestFile

@@ -81,15 +81,9 @@ function New-ManualInstallReport {
     Write-MigrationLog -Message "Found $($manualApps.Count) app(s) requiring manual installation" -Level Info
 
     # Load template
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    if (-not $scriptDir) {
-        # Fallback when dot-sourced from the project root
-        $scriptDir = if ($script:MigratorRoot) {
-            Join-Path $script:MigratorRoot 'Reports'
-        } else {
-            $PSScriptRoot
-        }
-    }
+    # Inside a function MyInvocation.MyCommand.Definition is the function's source, not its path;
+    # $PSScriptRoot is the folder of the file that defines the function
+    $scriptDir = $PSScriptRoot
     $templatePath = Join-Path $scriptDir 'Templates\ManualInstallReport.html'
     if (-not (Test-Path $templatePath)) {
         throw "ManualInstallReport template not found at: $templatePath"

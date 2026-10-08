@@ -25,6 +25,7 @@ function Initialize-WelcomePage {
 
     $cardExport = $Page.FindName('cardExport')
     $cardImport = $Page.FindName('cardImport')
+    $cardReceive = $Page.FindName('cardReceive')
 
     # Hide footer nav on welcome page
     $State.BtnNext.Visibility = 'Collapsed'
@@ -44,6 +45,8 @@ function Initialize-WelcomePage {
     $cardExport.Add_MouseLeave({ $this.BorderBrush = $this.FindResource('BorderBrush') })
     $cardImport.Add_MouseEnter({ $this.BorderBrush = $this.FindResource('AccentBrush') })
     $cardImport.Add_MouseLeave({ $this.BorderBrush = $this.FindResource('BorderBrush') })
+    $cardReceive.Add_MouseEnter({ $this.BorderBrush = $this.FindResource('AccentBrush') })
+    $cardReceive.Add_MouseLeave({ $this.BorderBrush = $this.FindResource('BorderBrush') })
 
     # Click handlers
     $cardExport.Add_MouseLeftButtonUp({
@@ -52,5 +55,9 @@ function Initialize-WelcomePage {
 
     $cardImport.Add_MouseLeftButtonUp({
         & $State.SetMode 'Import' $State
+    }.GetNewClosure())
+
+    $cardReceive.Add_MouseLeftButtonUp({
+        & $State.SetMode 'Receive' $State
     }.GetNewClosure())
 }

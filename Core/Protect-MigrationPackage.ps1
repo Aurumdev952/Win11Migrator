@@ -67,9 +67,6 @@ function Protect-MigrationPackage {
         }
         [System.IO.Compression.ZipFile]::CreateFromDirectory($PackagePath, $tempZip)
 
-        $zipBytes = [System.IO.File]::ReadAllBytes($tempZip)
-        Write-MigrationLog -Message "Compressed package size: $($zipBytes.Length) bytes" -Level Debug
-
         # ---- Step 2: Generate salt ----
         $salt = New-Object byte[] 32
         $rng  = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
@@ -83,7 +80,6 @@ function Protect-MigrationPackage {
         $passwordPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
             [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
         )
-
         $deriveBytes = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
             $passwordPlain, $salt, 100000
         )
@@ -93,61 +89,41 @@ function Protect-MigrationPackage {
         } finally {
             $deriveBytes.Dispose()
         }
-
-        # Clear plaintext password from memory
         $passwordPlain = $null
 
-        # ---- Step 4: Encrypt with AES-256-CBC ----
+        # ---- Step 4: Write header, then stream the zip through AES-256-CBC ----
+        # Streaming keeps memory flat; multi-GB packages exceed what a single byte array can hold.
         $aes = New-Object System.Security.Cryptography.AesManaged
-        try {
-            $aes.KeySize   = 256
-            $aes.BlockSize = 128
-            $aes.Mode      = [System.Security.Cryptography.CipherMode]::CBC
-            $aes.Padding   = [System.Security.Cryptography.PaddingMode]::PKCS7
-            $aes.Key       = $key
-            $aes.IV        = $iv
-
-            $encryptor = $aes.CreateEncryptor()
-            try {
-                $encryptedBytes = $encryptor.TransformFinalBlock($zipBytes, 0, $zipBytes.Length)
-            } finally {
-                $encryptor.Dispose()
-            }
-        } finally {
-            $aes.Dispose()
-        }
-
-        Write-MigrationLog -Message "Encrypted payload size: $($encryptedBytes.Length) bytes" -Level Debug
-
-        # ---- Step 5: Write output file ----
+        $aes.KeySize   = 256
+        $aes.BlockSize = 128
+        $aes.Mode      = [System.Security.Cryptography.CipherMode]::CBC
+        $aes.Padding   = [System.Security.Cryptography.PaddingMode]::PKCS7
+        $aes.Key       = $key
+        $aes.IV        = $iv
         $outputStream = [System.IO.File]::Create($OutputFile)
         try {
             $writer = New-Object System.IO.BinaryWriter($outputStream)
+            $writer.Write([byte[]]@(0x57, 0x31, 0x31, 0x4D, 0x43, 0x52, 0x50, 0x54))  # W11MCRPT
+            $writer.Write([uint32]1)
+            $writer.Write([uint32]$salt.Length)
+            $writer.Write($salt)
+            $writer.Write([uint32]$iv.Length)
+            $writer.Write($iv)
+            $writer.Flush()
+
+            $cryptoStream = New-Object System.Security.Cryptography.CryptoStream(
+                $outputStream, $aes.CreateEncryptor(), [System.Security.Cryptography.CryptoStreamMode]::Write)
+            $zipStream = [System.IO.File]::OpenRead($tempZip)
             try {
-                # Magic bytes: W11MCRPT (8 bytes)
-                $magic = [byte[]]@(0x57, 0x31, 0x31, 0x4D, 0x43, 0x52, 0x50, 0x54)
-                $writer.Write($magic)
-
-                # Version: uint32 = 1
-                $writer.Write([uint32]1)
-
-                # Salt length + salt
-                $writer.Write([uint32]$salt.Length)
-                $writer.Write($salt)
-
-                # IV length + IV
-                $writer.Write([uint32]$iv.Length)
-                $writer.Write($iv)
-
-                # Encrypted data (remainder of file)
-                $writer.Write($encryptedBytes)
-
-                $writer.Flush()
+                $zipStream.CopyTo($cryptoStream, 4MB)
+                $cryptoStream.FlushFinalBlock()
             } finally {
-                $writer.Dispose()
+                $zipStream.Dispose()
+                $cryptoStream.Dispose()
             }
         } finally {
             $outputStream.Dispose()
+            $aes.Dispose()
         }
 
         $outputFileInfo = Get-Item -Path $OutputFile

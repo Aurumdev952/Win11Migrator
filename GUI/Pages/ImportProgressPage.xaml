@@ -39,8 +39,12 @@
         </Grid>
 
         <!-- Current item -->
-        <TextBlock Grid.Row="3" x:Name="txtCurrentImportItem" Text=""
-                   Style="{StaticResource CaptionText}" Margin="0,0,0,8" TextTrimming="CharacterEllipsis" />
+        <StackPanel Grid.Row="3" Margin="0,0,0,8">
+            <TextBlock x:Name="txtCurrentImportItem" Text=""
+                       Style="{StaticResource CaptionText}" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="txtImportRate" Text=""
+                       Style="{StaticResource CaptionText}" Foreground="{StaticResource TextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+        </StackPanel>
 
         <!-- Stats -->
         <Border Grid.Row="4" Background="{StaticResource SurfaceBrush}" CornerRadius="4" Padding="16,8" Margin="0,0,0,8">

@@ -2,7 +2,7 @@
 
 Migrate your apps, files, and settings from one Windows 11 PC to another.
 
-Win11Migrator scans a source machine for installed applications, user data, browser profiles, and system settings. It packages everything into a portable migration bundle with a JSON manifest, transfers it via USB drive, OneDrive, or Google Drive, and then reinstalls and restores everything on the target machine through a step-by-step WPF wizard.
+Win11Migrator scans a source machine for installed applications, user data, browser profiles, and system settings. It writes everything into a migration package with a JSON manifest, either straight to the other PC over the local network or to a USB drive, OneDrive, Google Drive or a share. Then it reinstalls and restores everything on the target machine through a step-by-step WPF wizard or the command line.
 
 ---
 
@@ -36,7 +36,7 @@ Win11Migrator scans a source machine for installed applications, user data, brow
 | **Privileges** | Administrator recommended. Required on the target machine for app installation. |
 | **Disk Space** | Enough free space on the transfer medium to hold the migration package |
 
-Win11Migrator checks the official AuthorityGate release channel at startup, no more than once every 24 hours. When a newer version is available, it downloads the installer and requires a valid, timestamped **AUTHORITYGATE INC** Authenticode signature before offering to launch it. Run `Win11Migrator.ps1 -CheckForUpdates` for an immediate manual check.
+Win11Migrator checks the releases of the repository named by `UpdateRepository` in `Config\AppSettings.json` (`Aurumdev952/Win11Migrator`) at startup, no more than once every 24 hours. Before installing an update it verifies the download: against `UpdateSignerSubject` when that is set (signed builds), otherwise against the SHA-256 in the release's `SHA256SUMS.txt`. Run `Win11Migrator.ps1 -CheckForUpdates` for an immediate check.
 
 Optional tools that enhance functionality (detected automatically at runtime):
 
@@ -44,20 +44,43 @@ Optional tools that enhance functionality (detected automatically at runtime):
 |---|---|
 | [WinGet](https://github.com/microsoft/winget-cli) | Primary app install method (pre-installed on Windows 11 22H2+) |
 | [Chocolatey](https://chocolatey.org/) | Secondary app install method (auto-bootstrapped on target if needed) |
-| [7-Zip](https://www.7-zip.org/) | Only needed if you want to build a self-extracting EXE via `Build.ps1 -CreateSFX` |
 
 ---
 
 ## Getting Started
 
+Download from the [Releases page](https://github.com/Aurumdev952/Win11Migrator/releases). Each release has three forms of the same app:
+
+| File | Use it when |
+|---|---|
+| `Win11Migrator-<version>-x64.msi` | Installing on a PC, or deploying with Intune, SCCM or Group Policy. Installs to `Program Files\Aurumdev952\Win11Migrator` with Start menu and desktop shortcuts, upgrades in place, and uninstalls from Settings > Apps. Silent: `msiexec /i Win11Migrator-<version>-x64.msi /qn`. |
+| `Win11Migrator-<version>-portable.exe` | Running once without installing, e.g. from a USB stick. It unpacks to `%LOCALAPPDATA%\Win11Migrator\portable\<version>` on first run. |
+| `Win11Migrator-<version>-portable.zip` | Environments that block downloaded executables. Extract and double-click `Win11Migrator.bat`. |
+| `SHA256SUMS.txt` | Checking a download: `Get-FileHash <file> -Algorithm SHA256` must match. |
+
 ### Option 1: Double-click (recommended for non-technical users)
 
-1. Download or copy the `Win11Migrator` folder to your PC.
-2. Double-click **`Win11Migrator.bat`**.
+1. Install the MSI (or extract the zip, or run the portable exe).
+2. Start **Win11Migrator** from the Start menu (or double-click `Win11Migrator.bat`).
 3. Accept the UAC elevation prompt.
 4. The wizard GUI opens automatically.
 
-The `.bat` launcher checks for admin rights, requests elevation if needed, sets the execution policy for the session, and launches the PowerShell script.
+The `.bat` launcher requests elevation and runs the script with `-ExecutionPolicy Bypass` for that one process. It does not change system policy or any security setting.
+
+### Windows SmartScreen and Microsoft Defender
+
+Release builds are currently **unsigned**. On a PC that downloads one, SmartScreen may say "Windows protected your PC". Choose **More info > Run anyway**, after checking the file against `SHA256SUMS.txt` from the same release. The zip and the MSI rarely trigger this; the portable exe is the most likely to.
+
+Versions before 1.1.0 changed security settings from `Win11Migrator.bat`: they turned off Defender real-time protection, excluded all PowerShell scripts and `powershell.exe` from scanning, set the machine execution policy to Bypass, and disabled AMSI for the session. That behaviour is gone, and it was the main reason antivirus flagged the tool. On PCs that ran an older version, run this as administrator to undo it:
+
+```powershell
+.\Tools\Remove-LegacyDefenderChanges.ps1 -WhatIf               # show what would change
+.\Tools\Remove-LegacyDefenderChanges.ps1 -ResetExecutionPolicy # undo it
+```
+
+If Defender still flags a release, submit the file as a false positive at the [Microsoft Security Intelligence portal](https://www.microsoft.com/en-us/wdsi/filesubmission).
+
+To have releases signed, add two repository secrets: `WIN11MIGRATOR_SIGN_PFX` (the base64 of a code-signing `.pfx`) and `WIN11MIGRATOR_SIGN_PASSWORD`. The build then signs every script, the portable exe and the MSI with a timestamp. Also set `UpdateSignerSubject` in `AppSettings.json` to the certificate's subject (for example `CN=Your Org`), so the updater requires that signature. Certificates whose key lives in a cloud HSM (SSL.com eSigner, DigiCert KeyLocker, Azure Key Vault) need their vendor's signing step in place of the pfx. Signing does not remove SmartScreen warnings straight away: Microsoft builds reputation for a new publisher over a few weeks of clean downloads.
 
 ### Option 2: PowerShell
 
@@ -70,17 +93,42 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ### Parameters
 
 ```
-Win11Migrator.ps1 [-CLI] [-Verbose]
+Win11Migrator.ps1 [-CLI <action>] [options]
 ```
 
 | Parameter | Description |
 |---|---|
-| `-CLI` | Reserved for future CLI mode (not yet implemented; GUI launches by default) |
-| `-Verbose` | Enable verbose logging output |
+| `-CLI scan` | Scan this PC and list apps, data, browsers and settings |
+| `-CLI export` | Export a package to `-PackagePath` (default `MigrationPackage\`), or straight to another PC with `-SendTo` |
+| `-CLI receive` | Wait for another PC on the network to send its package, then restore it (needs administrator) |
+| `-CLI import -PackagePath <path>` | Restore a package |
+| `-CLI validate`, `status`, `diff`, `healthcheck`, `rollback` | Package checks and post-migration tools |
+| `-SendTo <PC> -PairingCode <code>` | With `export`: write directly into a PC waiting in `receive` mode |
+| `-NetworkTarget <PC> -TargetCredential <cred> -TargetUser <user>` | With `export`: push to a domain PC's admin share; the restore runs when that user signs in |
+| `-Resume` | With `export`: continue an unfinished package from this PC instead of starting over |
+| `-ExcludeDir <names>`, `-ExcludeFile <patterns>` | Skip more folder names or file patterns, on top of the configured defaults |
+| `-Profile <name>` | Apply a migration profile from `Config\MigrationProfiles\` |
+| `-MoveFromPackage` | With `import`: move files into place instead of copying (same volume only; consumes the package) |
+| `-Backup [-Incremental] [-BackupPath <path>]` | Headless backup; `-Incremental` refreshes one rolling folder |
+| `-ScheduleBackup` | Register a weekly incremental backup task |
+| `-Silent` | No console output; writes `migration-result.json` |
 
 ---
 
 ## Usage
+
+### Same network: Receive (fastest)
+
+When both PCs are on the same network, nothing needs to be carried between them.
+
+1. On the **new** PC, start Win11Migrator as administrator and choose **Receive**. It shows a pairing code such as `KQ7M-3XPA`.
+2. On the **old** PC, choose **Export**. On the transfer step, pick **Another PC on this network**, select the new PC (or type its name or IP address), enter the code and click **Connect**.
+3. The old PC writes the package straight into the new PC, with SMB compression. As soon as the app list arrives, the new PC starts installing apps while files are still coming in.
+4. When the transfer finishes, the new PC moves the received folders into the profile (a rename on the same disk, not a second copy) and restores browsers and settings.
+
+The new PC opens a hidden share writable only by a temporary local account whose password is derived from the pairing code, plus temporary SMB and discovery (UDP 50717) firewall rules. All of these are removed when the transfer completes, when the window closes, or on the next start after a crash. It works on workgroup and domain PCs and needs no WinRM.
+
+From the command line: `Win11Migrator.ps1 -CLI receive` on the new PC, then `Win11Migrator.ps1 -CLI export -SendTo NEWPC -PairingCode KQ7M-3XPA` on the old one.
 
 ### Export (Source PC)
 
@@ -95,11 +143,13 @@ Run Win11Migrator on the PC you are migrating **from**.
 3. **App Selection** -- Review the discovered app list. Each app shows its detected install method (WinGet, Chocolatey, Ninite, Store, Vendor Download, or Manual). Use the search box to filter. Select or deselect individual apps.
 4. **Data Selection** -- Toggle which user data folders, browser profiles, and system settings categories to include. Folder sizes are shown next to each item.
 5. **Storage Selection** -- Choose a transfer method:
+   - **Another PC on this network** -- Send directly to a PC waiting in Receive mode (see above)
+   - **Push to a domain PC** -- Write to another PC's admin share with its admin credentials; the restore starts when the user signs in
    - **USB Drive** -- Select from detected removable drives
    - **OneDrive** -- Copies to your OneDrive sync folder
    - **Google Drive** -- Copies to your Google Drive sync folder
    - **Custom Folder** -- Browse to any local or network path
-6. **Export** -- The tool packages everything into a migration bundle and copies it to the selected destination. A `manifest.json` file is written with all metadata.
+6. **Export** -- The package is written directly into the destination, so data crosses each medium once. The export stops before copying anything if the destination is too small. If an earlier export to the same place was interrupted, you are offered **Resume**, which skips files already copied. The progress page shows MB/s and the time remaining.
 7. **Complete** -- Review the summary. For cloud transfers, wait for the sync to finish before proceeding to the target machine.
 
 ### Import (Target PC)
@@ -109,8 +159,8 @@ Run Win11Migrator on the PC you are migrating **to**.
 1. **Welcome** -- Select **Import**.
 2. **Select Package** -- Browse to the migration package folder, or select from auto-detected packages found on USB drives and cloud sync folders.
 3. **Import** -- The tool reads `manifest.json` and performs the following in order:
-   1. **Install applications** -- Sequentially installs each app using its resolved method (WinGet, Chocolatey, Ninite, Store, or direct download). Failed installs are logged but do not stop the pipeline.
-   2. **Restore user data** -- Copies files back to the correct user profile folders using Robocopy.
+   1. **Install applications and restore user data at the same time** -- Apps install one after another in a background runspace (WinGet, Chocolatey, Ninite, Store, or direct download) while files are copied back to the profile folders. Failed installs are logged but do not stop the pipeline.
+   2. **Restore user data** -- Profile folders go to the matching known folders (OneDrive redirection is honoured); custom folders go under the user profile by name.
    3. **Restore browser profiles** -- Restores bookmarks, preferences, and history. Generates an HTML page with extension reinstall links for each browser.
    4. **Restore system settings** -- Re-imports WiFi profiles, printer configurations, mapped network drives, environment variables, and Windows settings.
    5. **Restore AppData** -- Merges exported AppData folders into the target profile.
@@ -140,6 +190,17 @@ The following profile folders are scanned and exported via Robocopy:
 - Selected AppData folders (Sticky Notes, Windows Themes, Credentials -- configurable)
 
 OneDrive Known Folder Move redirection is detected automatically through the registry (`User Shell Folders`).
+
+### Exclusions
+
+Folders that can be rebuilt are skipped by name, anywhere inside the selected folders: `node_modules`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.gradle`, `.next`, `.nuxt`, `.parcel-cache`, `.turbo`, `bower_components`, `.terraform`, `$RECYCLE.BIN` and `System Volume Information`. Files matching `*.tmp`, `~$*`, `Thumbs.db`, `desktop.ini`, `*.log` and `*.pyc` are skipped too, as are files larger than `MaxFileSizeMB`.
+
+- Change the defaults in `Config\AppSettings.json` (`ExcludeDirectories`, `ExcludeFilePatterns`).
+- A migration profile can add to them with an `Exclusions` block; the Developer profile adds `target`, `.angular`, `.svelte-kit`, `.dart_tool`, `.expo` and `DerivedData`.
+- In the wizard, **Data Selection > Excluded folders and file types** shows the full lists; edit them and click **Apply and re-measure**. Folder sizes on that page already account for exclusions.
+- On the command line, add more with `-ExcludeDir` and `-ExcludeFile`.
+
+The lists used are recorded in `manifest.json` under `Metadata.Exclusions`.
 
 ### Browser Profiles
 
@@ -185,12 +246,14 @@ Each install method has a configurable timeout (default 600 seconds) and uses th
 
 | Method | How It Works | Requirements |
 |---|---|---|
-| **USB Drive** | Detected via WMI (`Win32_DiskDrive` chain). Copies with Robocopy. Post-copy integrity check (file count + total size). | USB drive with sufficient free space |
-| **OneDrive** | Detected via `$env:OneDrive`, registry (`HKCU:\SOFTWARE\Microsoft\OneDrive`), and environment variables. Copies to a `Win11Migrator/` subfolder in the sync root. | OneDrive desktop app signed in and syncing |
-| **Google Drive** | Detected via `$env:LOCALAPPDATA\Google\DriveFS`, registry, and common user profile paths. Copies to a `Win11Migrator/` subfolder. | Google Drive for Desktop installed and syncing |
-| **Custom Folder** | Browse to any local or network (UNC) path. | Target path must be writable |
+| **Another PC on this network** | The target opens a temporary share; the source writes the package into it directly (robocopy `/COMPRESS`, 16 threads). Apps start installing on the target as soon as the manifest arrives. | Both PCs on the same network; administrator on the target |
+| **Push to a domain PC** | The source writes to `\\TARGET\C$\Win11Migrator` with admin credentials and registers a one-time logon task that restores as the target user. | Admin credentials for the target; WinRM or DCOM for the task (otherwise the user starts the import by hand) |
+| **USB Drive** | Detected via WMI (`Win32_DiskDrive` chain). The package is written straight to the drive with 4 robocopy threads, which suits flash media. | USB drive with sufficient free space |
+| **OneDrive** | Detected via `$env:OneDrive`, registry (`HKCU:\SOFTWARE\Microsoft\OneDrive`), and environment variables. Written to a `Win11Migrator/` subfolder in the sync root. | OneDrive desktop app signed in and syncing |
+| **Google Drive** | Detected via `$env:LOCALAPPDATA\Google\DriveFS`, registry, and common user profile paths. Written to a `Win11Migrator/` subfolder. | Google Drive for Desktop installed and syncing |
+| **Network Share / Custom Folder** | Any local or UNC path; the package goes in a `Win11Migrator/` subfolder. | Target path must be writable |
 
-Cloud methods rely on the desktop sync client rather than APIs, avoiding OAuth complexity.
+Every destination except Receive mode gets a copy of Win11Migrator next to the package, so the new PC can run it from there. Cloud methods rely on the desktop sync client rather than APIs, avoiding OAuth complexity.
 
 ---
 
@@ -208,11 +271,14 @@ All settings are in **`Config/AppSettings.json`**:
   "RetryDelaySeconds": 5,
   "DiskSpaceBufferMB": 500,
   "RobocopyThreads": 8,
-  "RobocopyRetries": 3,
-  "RobocopyWaitSeconds": 5,
+  "RobocopyThreadsByTarget": { "Local": 16, "Network": 16, "USB": 4, "Cloud": 8 },
+  "RobocopyRetries": 1,
+  "RobocopyWaitSeconds": 1,
+  "RobocopyUnbufferedIO": false,
   "UserDataFolders": ["Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music", "Favorites"],
   "AppDataInclude": ["Microsoft\\Sticky Notes", "Microsoft\\Windows\\Themes", "Microsoft\\Credentials"],
-  "ExcludeFilePatterns": ["*.tmp", "~$*", "Thumbs.db", "desktop.ini", "*.log"],
+  "ExcludeFilePatterns": ["*.tmp", "~$*", "Thumbs.db", "desktop.ini", "*.log", "*.pyc"],
+  "ExcludeDirectories": ["node_modules", ".venv", "__pycache__", "..."],
   "MaxFileSizeMB": 4096,
   "EnableWinget": true,
   "EnableChocolatey": true,
@@ -233,11 +299,13 @@ All settings are in **`Config/AppSettings.json`**:
 | `MaxRetryCount` | `3` | Retry attempts for transient failures (installs, file copies) |
 | `RetryDelaySeconds` | `5` | Seconds between retries |
 | `DiskSpaceBufferMB` | `500` | Extra headroom required beyond estimated package size |
-| `RobocopyThreads` | `8` | Robocopy `/MT` thread count for file operations |
-| `RobocopyRetries` / `RobocopyWaitSeconds` | `3` / `5` | Robocopy `/R` and `/W` parameters |
+| `RobocopyThreadsByTarget` | 16 / 16 / 4 / 8 | Robocopy `/MT` threads for local, network, USB and cloud-folder destinations |
+| `RobocopyRetries` / `RobocopyWaitSeconds` | `1` / `1` | Robocopy `/R` and `/W`; locked files rarely unlock within seconds, so failing fast keeps large copies moving |
+| `RobocopyUnbufferedIO` | `false` | Add `/J` (unbuffered I/O), which helps on very large files and hurts on many small ones |
 | `UserDataFolders` | 7 folders | Which profile folders to scan and export |
 | `AppDataInclude` | 3 folders | Which `%APPDATA%` / `%LOCALAPPDATA%` subfolders to include |
-| `ExcludeFilePatterns` | 5 patterns | File patterns excluded from Robocopy operations |
+| `ExcludeFilePatterns` | 6 patterns | File patterns excluded from every copy (`/XF`) |
+| `ExcludeDirectories` | 17 names | Folder names excluded anywhere in the selected folders (`/XD`) |
 | `MaxFileSizeMB` | `4096` | Skip individual files larger than this |
 | `Enable*` | all `true` | Toggle individual install methods on/off |
 | `SilentInstallTimeout` | `600` | Seconds before killing a hung installer process |
@@ -261,7 +329,10 @@ An exported migration package is a folder with the following structure:
 
 ```
 Win11Migration_COMPUTERNAME_20260226_143052/
-    manifest.json              # Machine info, app list, data inventory, settings
+    manifest.json              # Machine info, app list, data inventory, settings (written first, rewritten at the end)
+    transfer.json              # InProgress / Complete / Failed, bytes copied; read by a receiving PC and by -Resume
+    Apps/
+        winget-packages.json   # `winget export` output, usable with `winget import` by hand
     UserData/
         Desktop/               # Robocopy mirror of user's Desktop
         Documents/
@@ -269,7 +340,7 @@ Win11Migration_COMPUTERNAME_20260226_143052/
         ...
     AppData/
         Roaming/               # Selected AppData\Roaming subfolders
-        Local/                 # Selected AppData\Local subfolders
+        Local/                 # Selected AppData\Local subfolders (1.0.x packages nested these under AppData\AppData; both restore)
     BrowserProfiles/
         Chrome_Default/        # Bookmarks, Preferences, History, extensions_list.json
         Edge_Default/
@@ -322,58 +393,58 @@ The manifest is the authoritative record of the migration. Structure:
 
 ## Building from Source
 
-The build script packages all project files into a distributable ZIP:
+On Windows with the WiX Toolset CLI installed (`dotnet tool install --global wix --version 5.0.2`):
 
 ```powershell
-# Basic ZIP build
-.\Build.ps1
-
-# Custom version
-.\Build.ps1 -Version "1.2.0"
-
-# Custom output directory
-.\Build.ps1 -OutputPath "C:\Releases"
-
-# ZIP + self-extracting EXE (requires 7-Zip installed)
-.\Build.ps1 -CreateSFX
+.\build\Build-Release.ps1            # MSI, portable exe, portable zip and SHA256SUMS.txt in .\dist
+.\build\Build-Release.ps1 -SkipMsi   # portable artifacts only, no WiX needed
 ```
 
-Build output is placed in `.\Build\` by default:
+The version comes from `Version` in `Config\AppSettings.json` and must be `major.minor.patch`.
 
-```
-Build/
-    Win11Migrator_v1.0.0/     # Staging directory
-    Win11Migrator_v1.0.0.zip  # Distributable ZIP
-    Win11Migrator_v1.0.0.exe  # Self-extracting EXE (if -CreateSFX)
-```
+### Continuous integration and releases
 
-The ZIP contains everything needed to run on any Windows 11 machine with no prerequisites beyond PowerShell 5.1.
+`.github/workflows/ci.yml` runs on every push and pull request. It runs the linter and the Pester suite on Windows PowerShell 5.1, builds all artifacts, and smoke-tests them: it installs and uninstalls the MSI, runs the zip, and launches the portable exe. The artifacts are attached to the workflow run.
+
+To publish a release:
+
+1. Set `Version` in `Config\AppSettings.json` (for example `1.2.0`) and merge to `main`.
+2. Tag that commit and push the tag: `git tag v1.2.0 && git push origin v1.2.0`.
+3. The workflow checks that the tag matches the version, builds, and creates the GitHub release with all files attached.
 
 ---
 
 ## Running Tests
 
-Tests use the [Pester](https://pester.dev/) framework (ships with Windows PowerShell 5.1).
+The tests use [Pester](https://pester.dev/) 5. Windows PowerShell 5.1 ships with Pester 3, so install 5 first:
 
 ```powershell
-# Run all tests
-Invoke-Pester -Path .\Tests\
+Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
 
-# Run a specific test file
-Invoke-Pester -Path .\Tests\Core.Tests.ps1
-
-# Run with verbose output
+# Everything (on Windows)
 Invoke-Pester -Path .\Tests\ -Output Detailed
+
+# The cross-platform part, e.g. on Linux or macOS with pwsh
+$c = New-PesterConfiguration; $c.Run.Path = './Tests'; $c.Filter.ExcludeTag = 'Windows'; Invoke-Pester -Configuration $c
+
+# Lint as CI does
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
 ```
+
+GitHub Actions (`.github/workflows/test.yml`) runs the linter and the full suite under Windows PowerShell 5.1 on every push and pull request.
 
 ### Test Suites
 
 | File | Coverage |
 |---|---|
-| `Tests/Core.Tests.ps1` | Config loading, class instantiation, logging, retry wrapper, manifest round-trip, disk space estimation |
-| `Tests/AppDiscovery.Tests.ps1` | Name normalization, fuzzy similarity scoring, config JSON validation, Ninite/Store/Vendor catalog lookups |
-| `Tests/UserData.Tests.ps1` | Profile path detection, OneDrive redirection, browser profile enumeration, class defaults |
-| `Tests/Integration.Tests.ps1` | Full scan pipeline, manifest create/read round-trip, USB/cloud detection, report generation, project structure validation |
+| `Tests/Robocopy.Tests.ps1` | Robocopy arguments per destination, exclusions, quoting, live byte parsing, English and French job summaries, rate display |
+| `Tests/Exclusions.Tests.ps1` | Merging defaults, profiles and user additions; path matching; config validation rules |
+| `Tests/Export.Tests.ps1` | Destination resolution and space checks, manifest-first ordering, exclusions reaching robocopy, cloud folders, duplicate names, AppData layout, resume |
+| `Tests/Import.Tests.ps1` | Restore paths, move vs copy, conflicts, AppData from new and 1.0.x packages, read-only packages, installs overlapping file restore |
+| `Tests/Receive.Tests.ps1` | Pairing codes, derived password, incoming package states, UDP discovery over loopback, and a send-to-restore run with the share replaced by a folder |
+| `Tests/AdminShare.Tests.ps1` | Logon restore command, connection test when ping is blocked |
+| `Tests/Winget.Tests.ps1` | Which `winget list` rows can be reinstalled, truncated IDs |
+| `Tests/Core.Tests.ps1`, `AppDiscovery.Tests.ps1`, `UserData.Tests.ps1`, `Integration.Tests.ps1` | Config, classes, logging, retry, manifest round-trip, name normalization, catalogs, profile detection (the last two need Windows) |
 
 ---
 
@@ -383,7 +454,14 @@ Invoke-Pester -Path .\Tests\ -Output Detailed
 Win11Migrator/
     Win11Migrator.ps1              # Entry point: loads all modules, initializes environment, launches GUI
     Win11Migrator.bat              # Double-click launcher: handles UAC elevation and execution policy
-    Build.ps1                      # Packaging script: ZIP and optional SFX EXE
+    build/
+        Build-Release.ps1          # Builds the MSI, portable exe, portable zip and checksums
+        PortableLauncher.cs        # Source of the portable exe
+    Tools/
+        Remove-LegacyDefenderChanges.ps1  # Undo the security changes made by launchers before 1.1.0
+    .github/workflows/
+        ci.yml                     # Test, build, smoke-test, and release on v* tags
+        test.yml                   # Lint and Pester (reused by ci.yml)
     README.md
     LICENSE
 
@@ -402,17 +480,21 @@ Win11Migrator/
         Get-DiskSpaceEstimate.ps1  # Estimate package size, verify target has sufficient space
         ConvertTo-MigrationManifest.ps1  # Serialize scan results to manifest.json
         Read-MigrationManifest.ps1       # Deserialize and validate manifest with typed reconstruction
+        Invoke-Robocopy.ps1        # The one robocopy wrapper: tuned flags, streamed output, byte progress, locale-proof summary
+        Get-MigrationExclusions.ps1  # Merge folder and file exclusions from config, profile and user
+        Invoke-MigrationExport.ps1 # The export engine shared by GUI, CLI, backup and network sends
+        Invoke-MigrationImport.ps1 # The import engine: installs apps while restoring files
 
     Modules/
         AppDiscovery/
             Get-InstalledApps.ps1      # Orchestrator: calls all scanners, deduplicates by weighted metadata score
             Get-RegistryApps.ps1       # HKLM + HKCU + WOW6432Node uninstall key scanner
-            Get-WingetApps.ps1         # Parses `winget list` fixed-width table output
+            Get-WingetApps.ps1         # Parses `winget list`; keeps only IDs `winget export` can reinstall
             Get-StoreApps.ps1          # Filters Get-AppxPackage (excludes frameworks, system packages)
             Get-ProgramFilesApps.ps1   # Fallback: scans Program Files folders for .exe FileVersionInfo
             Get-NormalizedAppName.ps1  # Name normalization + Levenshtein distance + Jaccard similarity
             Resolve-InstallMethod.ps1  # Cascade resolver: WinGet > Choco > Ninite > Store > Vendor > Manual
-            Search-WingetPackage.ps1   # Fuzzy match against `winget search` output
+            Search-WingetPackage.ps1   # Fuzzy match against `winget search` output, cached per product
             Search-ChocolateyPackage.ps1  # CLI search + OData v2 API fallback
             Search-NinitePackage.ps1   # Exact + fuzzy match against NiniteAppList.json
             Search-StorePackage.ps1    # Exact + fuzzy match against StoreAppCatalog.json
@@ -429,8 +511,9 @@ Win11Migrator/
 
         UserData/
             Get-UserProfilePaths.ps1   # Resolve actual paths via registry; detect OneDrive KFM redirection
-            Export-UserProfile.ps1     # Robocopy /MIR with multi-threading, excluded patterns, progress
-            Import-UserProfile.ps1     # Robocopy /E (merge, not mirror) to target profile paths
+            Export-UserProfile.ps1     # Copy selected folders through Invoke-Robocopy with exclusions
+            Import-UserProfile.ps1     # Restore to the known folders (or under the profile for custom folders)
+            Restore-PackageFolder.ps1  # Move into place on the same volume, else copy
             Export-AppDataSettings.ps1 # Copy selected Roaming/Local AppData subfolders
             Import-AppDataSettings.ps1 # Restore AppData with path remapping
 
@@ -460,12 +543,16 @@ Win11Migrator/
         StorageTargets/
             Get-USBDrives.ps1              # WMI disk chain detection for removable USB drives
             Find-CloudSyncFolders.ps1      # Detect OneDrive and Google Drive sync roots
-            Export-ToUSBDrive.ps1          # Robocopy + post-copy integrity verification
-            Import-FromUSBDrive.ps1        # Locate package on USB, copy to local temp
-            Export-ToOneDrive.ps1          # Copy to OneDrive/Win11Migrator/ subfolder
-            Import-FromOneDrive.ps1        # Locate and copy from OneDrive sync folder
-            Export-ToGoogleDrive.ps1       # Copy to Google Drive/Win11Migrator/ subfolder
-            Import-FromGoogleDrive.ps1     # Locate and copy from Google Drive sync folder
+            Resolve-ExportDestination.ps1  # Map the chosen target to a package folder; check free space
+            Copy-MigratorToTarget.ps1      # Bundle the tool next to the package
+
+        NetworkTransfer/
+            ReceiveProtocol.ps1            # Pairing codes, derived password, discovery messages, incoming state
+            Start-ReceiveSession.ps1       # Target: temporary account, share, firewall rules, discovery responder
+            Connect-ReceiveSession.ps1     # Source: find receivers, connect with the code
+            Register-RemoteRestoreTask.ps1 # Domain push: map C$, schedule the restore at user sign-in
+            Test-RemoteAccess.ps1          # Ping, WinRM, admin share and PSSession checks
+            Find-NetworkComputers.ps1      # AD, ARP, net view and ping-sweep discovery
 
     GUI/
         MainWindow.xaml                # WPF window shell with header, content frame, footer nav
@@ -476,11 +563,13 @@ Win11Migrator/
             Controls.xaml              # Button, TextBox, CheckBox, ProgressBar, Card templates
             Icons.xaml                 # Path-based vector icons (Material Design geometry)
         Pages/
-            WelcomePage.xaml + .ps1        # Export vs Import mode selection cards
+            WelcomePage.xaml + .ps1        # Export, Import or Receive
+            ReceivePage.xaml + .ps1        # Pairing code, live receive progress, early app installs
             ScanProgressPage.xaml + .ps1   # Background scanning with per-phase progress indicators
             AppSelectionPage.xaml + .ps1   # Filterable checkbox list with install method badges
-            DataSelectionPage.xaml + .ps1  # Toggle data categories with size display
-            StorageSelectionPage.xaml + .ps1  # USB / OneDrive / Google Drive / Custom folder picker
+            DataSelectionPage.xaml + .ps1  # Toggle data categories; background sizing; exclusion editor
+            StorageSelectionPage.xaml + .ps1  # Another PC / domain push / USB / OneDrive / Google Drive / share / folder
+            NetworkTargetPage.xaml + .ps1     # Credentials and connection test for the domain push
             ExportProgressPage.xaml + .ps1    # Multi-phase export with log viewer
             ImportSourcePage.xaml + .ps1      # Browse for package + auto-detect on USB/cloud
             ImportProgressPage.xaml + .ps1    # Install + restore progress with success/fail counters
@@ -497,11 +586,7 @@ Win11Migrator/
             ManualInstallReport.html   # HTML template with {{PLACEHOLDER}} markers
             CompletionReport.html      # HTML template with status badges and conic-gradient charts
 
-    Tests/
-        Core.Tests.ps1                 # Config, classes, logging, retry, manifest, disk space
-        AppDiscovery.Tests.ps1         # Normalization, similarity, config files, catalog lookups
-        UserData.Tests.ps1             # Profile paths, browser detection, export/import
-        Integration.Tests.ps1          # Full pipeline, structure validation, report generation
+    Tests/                         # Pester 5 suites; see Running Tests
 ```
 
 ---
@@ -548,7 +633,10 @@ Defined in `Core/Initialize-Environment.ps1`:
 | **Cloud via sync folder** (not API) | Avoids OAuth token management, app registration, and API rate limits. Relies on already-configured desktop sync clients. |
 | **Robocopy** for file operations | Handles long paths (>260 chars), automatic retries, multi-threading, and structured exit codes. |
 | **Fuzzy name matching** | Registry display names rarely match package manager IDs exactly. Levenshtein + Jaccard combination gives robust matching. |
-| **Sequential app install** | Multiple concurrent MSI installs fail due to the Windows Installer mutex. Sequential execution is slower but reliable. |
+| **Sequential app install, parallel to file restore** | Multiple concurrent MSI installs fail due to the Windows Installer mutex, so apps install one at a time. They run alongside the file restore because one is network-bound and the other disk-bound. |
+| **Write packages in place** | Staging locally and then copying doubles the I/O and needs free space equal to the profile on the source disk. |
+| **Receive mode instead of pushing to C$** | Workgroup PCs block remote admin access for local accounts. A share the target opens for itself works everywhere and needs no WinRM. |
+| **One export and one import engine** | The GUI, CLI, backup and network paths call the same functions, so a fix lands everywhere at once. |
 | **Individual failures don't abort** | A single failed app install or file copy should not prevent the rest of the migration. All errors are collected and shown in the completion report. |
 | **No password export** | Browser password databases (`Login Data`, `logins.json`, `key4.db`) are never touched. This is a deliberate security decision. |
 | **HTML reports** (no JS) | Self-contained, opens in any browser, no dependencies. CSS `conic-gradient` for pie charts. |
@@ -562,8 +650,9 @@ Defined in `Core/Initialize-Environment.ps1`:
 - **Ninite free tier** does not provide granular exit codes or CLI control. Failures may not be precisely reported.
 - **Store apps** that require specific hardware or account entitlements may fail to install via `winget --source msstore`.
 - **Taskbar pins**: Windows 11 taskbar pin restoration is best-effort due to OS-level protections on the `Taskband` registry data.
-- **CLI mode** is not yet implemented. The tool currently runs only as a GUI wizard.
-- **SugarSync and Direct Network** transfer are planned but not yet implemented as storage targets.
+- **Receive mode** needs administrator rights on the new PC, and a network that allows SMB between the two PCs. Guest networks with client isolation block it; use USB there.
+- **Domain push** restores when the target user signs in. If that user is not a local administrator, app installs that need elevation fail and appear in the manual install report.
+- **Encryption** is not applied to Receive-mode transfers; the package goes straight from one PC to the other.
 
 ---
 

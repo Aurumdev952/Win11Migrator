@@ -24,6 +24,7 @@
     scan     - Scan this PC and display discovered apps, data, browsers, settings, profiles
     export   - Run a full export (scan + package creation)
     import   - Import/restore from a migration package
+    receive  - Wait for another PC on the network to send its package, then restore it
     validate - Validate a migration package (check manifest, verify file integrity)
     status   - Show migration status from registry
 .PARAMETER Action
@@ -46,6 +47,12 @@
     .\Win11Migrator.ps1 -CLI import -PackagePath "D:\Migration\Win11Migration_PC1_20260227"
     Imports and restores from the specified package.
 .EXAMPLE
+    .\Win11Migrator.ps1 -CLI receive
+    On the new PC: shows a pairing code and restores whatever the old PC sends.
+.EXAMPLE
+    .\Win11Migrator.ps1 -CLI export -SendTo NEWPC -PairingCode ABCD-2345
+    On the old PC: exports straight into the new PC waiting in receive mode.
+.EXAMPLE
     .\Win11Migrator.ps1 -CLI validate -PackagePath "D:\Migration\Win11Migration_PC1_20260227"
     Validates the specified migration package.
 .NOTES
@@ -55,7 +62,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('', 'scan', 'export', 'import', 'validate', 'status', 'diff', 'healthcheck', 'rollback')]
+    [ValidateSet('', 'scan', 'export', 'import', 'receive', 'validate', 'status', 'diff', 'healthcheck', 'rollback')]
     [string]$CLI,
     [string]$PackagePath,
     [switch]$Backup,
@@ -68,6 +75,12 @@ param(
     [string]$TargetUser,
     [PSCredential]$TargetCredential,
     [string]$ComparePath,
+    [switch]$Resume,
+    [switch]$MoveFromPackage,
+    [string]$SendTo,
+    [string]$PairingCode,
+    [string[]]$ExcludeDir,
+    [string[]]$ExcludeFile,
     [switch]$CheckForUpdates
 )
 
@@ -94,6 +107,10 @@ if ($CheckForUpdates) {
 . "$script:MigratorRoot\Core\ConvertTo-MigrationManifest.ps1"
 . "$script:MigratorRoot\Core\Read-MigrationManifest.ps1"
 . "$script:MigratorRoot\Core\Test-MigrationConfig.ps1"
+. "$script:MigratorRoot\Core\Invoke-Robocopy.ps1"
+. "$script:MigratorRoot\Core\Get-MigrationExclusions.ps1"
+. "$script:MigratorRoot\Core\Invoke-MigrationExport.ps1"
+. "$script:MigratorRoot\Core\Invoke-MigrationImport.ps1"
 
 # --- Load App Discovery ---
 Get-ChildItem "$script:MigratorRoot\Modules\AppDiscovery\*.ps1" | ForEach-Object { . $_.FullName }
@@ -207,6 +224,7 @@ if ($isAdmin) {
     Set-ItemProperty -Path $regPathLM -Name 'Version' -Value $script:MigratorVersion
     Set-ItemProperty -Path $regPathLM -Name 'InstallPath' -Value $script:MigratorRoot
     Set-ItemProperty -Path $regPathLM -Name 'LastRunDate' -Value (Get-Date).ToString('o')
+    if (Get-Command Remove-StaleReceiveSession -ErrorAction SilentlyContinue) { Remove-StaleReceiveSession }
 } else {
     Write-MigrationLog -Message "Running without admin privileges. Some features may be limited." -Level Warning
 }
@@ -222,7 +240,7 @@ if ($ScheduleBackup) {
     $scriptPath = Join-Path $script:MigratorRoot 'Win11Migrator.ps1'
     $outputPath = if ($BackupPath) { $BackupPath } else { $script:Config.PackagePath }
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Backup -BackupPath `"$outputPath`""
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Backup -Incremental -BackupPath `"$outputPath`""
     $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At '2:00AM'
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd -AllowStartIfOnBatteries
 
@@ -249,98 +267,35 @@ if ($Backup) {
     Write-Host ""
 
     $outputDir = if ($BackupPath) { $BackupPath } else { $script:Config.PackagePath }
-    $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $pkgName = "Win11Backup_$($env:COMPUTERNAME)_$timestamp"
+    # Incremental backups refresh one rolling folder; robocopy then copies only files that changed
+    $pkgName = if ($Incremental) { "Win11Backup_$($env:COMPUTERNAME)_Latest" } else { "Win11Backup_$($env:COMPUTERNAME)_$(Get-Date -Format 'yyyyMMdd_HHmmss')" }
     $pkgPath = Join-Path $outputDir $pkgName
-    New-Item -Path $pkgPath -ItemType Directory -Force | Out-Null
 
-    Write-Host "[1/5] Scanning installed applications..." -ForegroundColor Yellow
-    $apps = Get-InstalledApps
+    Write-Host "[1/3] Scanning installed applications..." -ForegroundColor Yellow
+    $apps = @(Get-InstalledApps)
     Write-Host "  Found $($apps.Count) applications" -ForegroundColor Green
 
-    Write-Host "[2/5] Detecting user data folders..." -ForegroundColor Yellow
-    $profilePaths = Get-UserProfilePaths
-    $cloudFolders = Find-CloudSyncFolders
-    $userData = @()
-    foreach ($folder in @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Music', 'Videos', 'Favorites')) {
-        $folderPath = $profilePaths[$folder]
-        if (-not $folderPath) { $folderPath = Join-Path $env:USERPROFILE $folder }
-        if (Test-Path $folderPath) {
-            $item = [UserDataItem]::new()
-            $item.SourcePath = $folderPath
-            $item.RelativePath = $folder
-            $item.Category = $folder
-            $item.Selected = $true
-            $isOneDrive = ($folderPath -match 'OneDrive')
-            $isGoogleDrive = $false
-            if ($cloudFolders.GoogleDriveAvailable -and $cloudFolders.GoogleDrivePath) {
-                $gdNorm = $cloudFolders.GoogleDrivePath.TrimEnd('\')
-                $isGoogleDrive = ($folderPath -like "$gdNorm\*" -or $folderPath -eq $gdNorm)
-            }
-            if ($isOneDrive -or $isGoogleDrive) {
-                $item.IsCloudSynced = $true
-                $item.CloudProvider = if ($isOneDrive) { 'OneDrive' } else { 'GoogleDrive' }
-                $item.SkipCloudSync = $true
-            }
-            $userData += $item
-        }
-    }
-    Write-Host "  Found $($userData.Count) user data folders" -ForegroundColor Green
-
-    Write-Host "[3/5] Exporting user data..." -ForegroundColor Yellow
-    $dataDir = Join-Path $pkgPath "UserData"
-    New-Item -Path $dataDir -ItemType Directory -Force | Out-Null
-    $exportData = @($userData | Where-Object { -not $_.SkipCloudSync })
-    $skippedCloud = @($userData | Where-Object { $_.SkipCloudSync })
-    if ($skippedCloud.Count -gt 0) {
-        Write-Host "  Skipping $($skippedCloud.Count) cloud-synced folder(s) (will re-sync)" -ForegroundColor Cyan
-        foreach ($sk in $skippedCloud) { $sk.ExportStatus = 'Skipped' }
-    }
-    try {
-        if ($Incremental) {
-            # Incremental backup: only copy changed files since last backup
-            $lastBackupPath = (Get-ItemProperty -Path 'HKCU:\SOFTWARE\AuthorityGate\Win11Migrator' -Name 'LastBackupPath' -ErrorAction SilentlyContinue).LastBackupPath
-            if ($lastBackupPath -and (Test-Path (Join-Path $lastBackupPath "fingerprint.json"))) {
-                Write-Host "  Incremental mode: comparing against $lastBackupPath" -ForegroundColor Cyan
-                Export-IncrementalProfile -Items $exportData -OutputDirectory $dataDir -PreviousPackagePath $lastBackupPath | Out-Null
-            } else {
-                Write-Host "  No previous backup found, performing full backup" -ForegroundColor Yellow
-                Export-UserProfile -Items $exportData -OutputDirectory $dataDir | Out-Null
-            }
-        } else {
-            Export-UserProfile -Items $exportData -OutputDirectory $dataDir | Out-Null
-        }
-        Write-Host "  User data exported" -ForegroundColor Green
-    } catch {
-        Write-Host "  WARNING: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-
-    Write-Host "[4/5] Detecting and exporting application profiles..." -ForegroundColor Yellow
+    Write-Host "[2/3] Detecting user data folders and application profiles..." -ForegroundColor Yellow
+    $userData = @(Get-DefaultUserDataItems -SkipCloudSynced)
     $appProfiles = @(Get-DetectedAppProfiles -InstalledApps $apps)
-    Write-Host "  Detected $($appProfiles.Count) application profiles" -ForegroundColor Green
-    if ($appProfiles.Count -gt 0) {
-        $profilesDir = Join-Path $pkgPath "AppProfiles"
-        New-Item -Path $profilesDir -ItemType Directory -Force | Out-Null
-        $exported = Export-AppProfiles -Profiles $appProfiles -OutputPath $profilesDir
-        Write-Host "  Exported $exported application profiles" -ForegroundColor Green
-    }
+    Write-Host "  Found $($userData.Count) folders, $($appProfiles.Count) application profiles" -ForegroundColor Green
 
-    Write-Host "[5/5] Writing backup manifest..." -ForegroundColor Yellow
-    ConvertTo-MigrationManifest -OutputPath $pkgPath `
-        -Apps $apps `
-        -UserData $userData `
-        -AppProfiles $appProfiles `
-        -Metadata @{ BackupMode = $true; BackupDate = (Get-Date).ToString('o'); Incremental = [bool]$Incremental }
-    Write-Host "  Manifest written" -ForegroundColor Green
-
-    # Generate fingerprint for incremental backup support
-    try {
-        $fingerprint = Get-PackageFingerprint -PackagePath $pkgPath
-        $fingerprint | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $pkgPath "fingerprint.json") -Encoding UTF8
-        Write-Host "  Package fingerprint generated" -ForegroundColor Green
-    } catch {
-        Write-Host "  WARNING: Fingerprint generation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "[3/3] Writing backup to $pkgPath..." -ForegroundColor Yellow
+    $progress = [hashtable]::Synchronized(@{
+        Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+        Echo = $true
+    })
+    $selection = @{
+        Apps           = $apps
+        UserData       = $userData
+        AppProfiles    = $appProfiles
+        SettingsFlags  = @{}
+        IncludeAppData = $false
+        Exclusions     = Get-MigrationExclusions -ExtraDirectories $ExcludeDir -ExtraFiles $ExcludeFile
     }
+    $result = Invoke-MigrationExport -PackagePath $pkgPath -Selection $selection -Progress $progress
+    Write-TransferStatus -PackagePath $pkgPath -State Complete -Phase 'Complete' -BytesTotal ([long]$progress.BytesTotal) -BytesDone ([long]$progress.BytesDone) -Errors $result.Errors
+    foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
     # Update registry with last backup info
     Set-ItemProperty -Path $regPath -Name 'LastBackupDate' -Value (Get-Date).ToString('o')
@@ -527,221 +482,104 @@ if ($CLI) {
         # CLI: EXPORT - Full export to package
         # =============================================
         'export' {
-            $outputDir = if ($PackagePath) { $PackagePath } else { $script:Config.PackagePath }
-            Write-MigrationLog -Message "CLI export started to $outputDir" -Level Info
-
-            $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-            $pkgName = "Win11Migration_$($env:COMPUTERNAME)_$timestamp"
-            $pkgPath = Join-Path $outputDir $pkgName
-            New-Item -Path $pkgPath -ItemType Directory -Force | Out-Null
-
-            Write-Host "[1/8] Scanning applications..." -ForegroundColor Yellow
-            $apps = Get-InstalledApps
+            Write-Host "[1/4] Scanning applications..." -ForegroundColor Yellow
+            $apps = @(Get-InstalledApps)
             Write-Host "  Found $($apps.Count) applications" -ForegroundColor Green
 
-            Write-Host "[2/8] Detecting user data..." -ForegroundColor Yellow
-            $profilePaths = Get-UserProfilePaths
-            $cloudFolders = Find-CloudSyncFolders
-            $userData = @()
-            $cloudSyncFolders = @()
-            foreach ($folder in @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Music', 'Videos', 'Favorites')) {
-                $folderPath = $profilePaths[$folder]
-                if (-not $folderPath) { $folderPath = Join-Path $env:USERPROFILE $folder }
-                if (Test-Path $folderPath) {
-                    $item = [UserDataItem]::new()
-                    $item.SourcePath = $folderPath
-                    $item.RelativePath = $folder
-                    $item.Category = $folder
-                    $item.Selected = $true
-                    # Detect cloud sync
-                    $isOneDrive = ($folderPath -match 'OneDrive')
-                    $isGoogleDrive = $false
-                    if ($cloudFolders.GoogleDriveAvailable -and $cloudFolders.GoogleDrivePath) {
-                        $gdNorm = $cloudFolders.GoogleDrivePath.TrimEnd('\')
-                        $isGoogleDrive = ($folderPath -like "$gdNorm\*" -or $folderPath -eq $gdNorm)
-                    }
-                    if ($isOneDrive -or $isGoogleDrive) {
-                        $item.IsCloudSynced = $true
-                        $item.CloudProvider = if ($isOneDrive) { 'OneDrive' } else { 'GoogleDrive' }
-                        $item.SkipCloudSync = $true  # CLI default: skip cloud-synced folders
-                        $cloudSyncFolders += $item
-                    }
-                    $userData += $item
-                }
+            Write-Host "[2/4] Detecting user data and browser profiles..." -ForegroundColor Yellow
+            $exclusions = Get-MigrationExclusions -ExtraDirectories $ExcludeDir -ExtraFiles $ExcludeFile
+            Write-Host "  Excluding folders: $($exclusions.Directories -join ', ')" -ForegroundColor DarkGray
+            $userData = @(Get-DefaultUserDataItems -SkipCloudSynced)
+            foreach ($item in $userData | Where-Object { -not $_.SkipCloudSync }) {
+                $item.SizeBytes = (Measure-RobocopySource -Source $item.SourcePath -Exclusions $exclusions).Bytes
+                Write-Host ("  {0,-10} {1,8:N1} GB" -f $item.Category, ($item.SizeBytes / 1GB)) -ForegroundColor DarkGray
             }
-            Write-Host "  Found $($userData.Count) folders" -ForegroundColor Green
-            if ($cloudSyncFolders.Count -gt 0) {
-                Write-Host "  Cloud-synced folders (will re-sync on new PC, skipping copy):" -ForegroundColor Cyan
-                foreach ($cf in $cloudSyncFolders) {
-                    Write-Host "    $($cf.Category) ($($cf.CloudProvider))" -ForegroundColor DarkCyan
-                }
+            foreach ($cf in $userData | Where-Object { $_.SkipCloudSync }) {
+                Write-Host "  $($cf.Category) is synced by $($cf.CloudProvider); it will re-sync on the new PC" -ForegroundColor DarkCyan
             }
 
-            Write-Host "[3/8] Exporting user data..." -ForegroundColor Yellow
-            $dataDir = Join-Path $pkgPath "UserData"
-            New-Item -Path $dataDir -ItemType Directory -Force | Out-Null
-            # Filter out cloud-synced folders the user chose to skip
-            $exportData = @($userData | Where-Object { -not $_.SkipCloudSync })
-            $skippedCloud = @($userData | Where-Object { $_.SkipCloudSync })
-            if ($skippedCloud.Count -gt 0) {
-                Write-Host "  Skipping $($skippedCloud.Count) cloud-synced folder(s)" -ForegroundColor Cyan
-                foreach ($sk in $skippedCloud) { $sk.ExportStatus = 'Skipped' }
-            }
-            try {
-                $exportedData = Export-UserProfile -Items $exportData -OutputDirectory $dataDir
-                # Merge back with skipped items
-                $userData = @($exportedData) + @($skippedCloud)
-                $successCount = @($exportedData | Where-Object { $_.ExportStatus -eq 'Success' }).Count
-                Write-Host "  Exported $successCount user data folders" -ForegroundColor Green
-            } catch {
-                Write-Host "  WARNING: $($_.Exception.Message)" -ForegroundColor Yellow
-            }
-
-            Write-Host "[4/8] Detecting browser profiles..." -ForegroundColor Yellow
             $browsers = @()
-            $localAppData = $env:LOCALAPPDATA; $appData = $env:APPDATA
             $browserDefs = @(
-                @{ Name = 'Chrome'; Path = Join-Path $localAppData "Google\Chrome\User Data"; Filter = $true }
-                @{ Name = 'Edge'; Path = Join-Path $localAppData "Microsoft\Edge\User Data"; Filter = $true }
-                @{ Name = 'Brave'; Path = Join-Path $localAppData "BraveSoftware\Brave-Browser\User Data"; Filter = $true }
-                @{ Name = 'Firefox'; Path = Join-Path $appData "Mozilla\Firefox\Profiles"; Filter = $false }
+                @{ Name = 'Chrome';  Path = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"; Filter = $true }
+                @{ Name = 'Edge';    Path = Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data"; Filter = $true }
+                @{ Name = 'Brave';   Path = Join-Path $env:LOCALAPPDATA "BraveSoftware\Brave-Browser\User Data"; Filter = $true }
+                @{ Name = 'Firefox'; Path = Join-Path $env:APPDATA "Mozilla\Firefox\Profiles"; Filter = $false }
             )
             foreach ($def in $browserDefs) {
-                if (Test-Path $def.Path) {
-                    if ($def.Filter) {
-                        $profiles = @(Get-ChildItem $def.Path -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'Default' -or $_.Name -match '^Profile \d+$' })
-                    } else {
-                        $profiles = @(Get-ChildItem $def.Path -Directory -ErrorAction SilentlyContinue)
-                    }
-                    foreach ($p in $profiles) {
-                        $bp = [BrowserProfile]::new()
-                        $bp.Browser = $def.Name
-                        $bp.ProfileName = $p.Name
-                        $bp.ProfilePath = $p.FullName
-                        $bp.Selected = $true
-                        $browsers += $bp
-                    }
+                if (-not (Test-Path $def.Path)) { continue }
+                $profiles = @(Get-ChildItem $def.Path -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { -not $def.Filter -or $_.Name -eq 'Default' -or $_.Name -match '^Profile \d+$' })
+                foreach ($p in $profiles) {
+                    $bp = [BrowserProfile]::new()
+                    $bp.Browser = $def.Name
+                    $bp.ProfileName = $p.Name
+                    $bp.ProfilePath = $p.FullName
+                    $bp.Selected = $true
+                    $browsers += $bp
                 }
             }
-            Write-Host "  Found $($browsers.Count) profiles" -ForegroundColor Green
-
-            Write-Host "[5/8] Exporting browser profiles..." -ForegroundColor Yellow
-            $browserDir = Join-Path $pkgPath "BrowserProfiles"
-            New-Item -Path $browserDir -ItemType Directory -Force | Out-Null
-            foreach ($profile in $browsers) {
-                $profileDir = Join-Path $browserDir "$($profile.Browser)_$($profile.ProfileName)"
-                New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
-                try {
-                    switch ($profile.Browser) {
-                        'Chrome'  { Export-ChromeProfile -Profile $profile -OutputDirectory $profileDir }
-                        'Edge'    { Export-EdgeProfile -Profile $profile -OutputDirectory $profileDir }
-                        'Firefox' { Export-FirefoxProfile -Profile $profile -OutputDirectory $profileDir }
-                        'Brave'   { Export-BraveProfile -Profile $profile -OutputDirectory $profileDir }
-                    }
-                    Write-Host "    Exported: $($profile.Browser) - $($profile.ProfileName)" -ForegroundColor DarkGray
-                } catch {
-                    Write-Host "    FAILED: $($profile.Browser) - $($profile.ProfileName): $($_.Exception.Message)" -ForegroundColor Yellow
-                }
-            }
-
-            Write-Host "[6/8] Exporting system settings..." -ForegroundColor Yellow
-            $settingsDir = Join-Path $pkgPath "SystemSettings"
-            New-Item -Path $settingsDir -ItemType Directory -Force | Out-Null
-            $settings = @()
-            try { $settings += Export-WiFiProfiles -ExportPath (Join-Path $settingsDir "WiFi") } catch {}
-            try { $settings += Export-PrinterConfigs -ExportPath (Join-Path $settingsDir "Printers") } catch {}
-            try { $settings += Export-MappedDrives -ExportPath (Join-Path $settingsDir "MappedDrives") } catch {}
-            try { $settings += Export-EnvironmentVariables -ExportPath (Join-Path $settingsDir "EnvVars") } catch {}
-            try { $settings += Export-WindowsSettings -ExportPath (Join-Path $settingsDir "WindowsSettings") } catch {}
-            try { $settings += Export-AccessibilitySettings -ExportPath (Join-Path $settingsDir "Accessibility") } catch {}
-            try { $settings += Export-RegionalSettings -ExportPath (Join-Path $settingsDir "Regional") } catch {}
-            try { $settings += Export-VPNConnections -ExportPath (Join-Path $settingsDir "VPN") } catch {}
-            try { $settings += Export-UserCertificates -ExportPath (Join-Path $settingsDir "Certificates") } catch {}
-            try { $settings += Export-ODBCSettings -ExportPath (Join-Path $settingsDir "ODBC") } catch {}
-            try { $settings += Export-FolderOptions -ExportPath (Join-Path $settingsDir "FolderOptions") } catch {}
-            try { $settings += Export-InputSettings -ExportPath (Join-Path $settingsDir "InputSettings") } catch {}
-            try { $settings += Export-PowerSettings -ExportPath (Join-Path $settingsDir "PowerPlan") } catch {}
-            Write-Host "  Exported system settings" -ForegroundColor Green
-
-            # AppData
-            try {
-                $appDataDir = Join-Path $pkgPath "AppData"
-                New-Item -Path $appDataDir -ItemType Directory -Force | Out-Null
-                $appDataItems = Export-AppDataSettings -OutputDirectory $appDataDir
-                if ($appDataItems) { $userData = @($userData) + @($appDataItems) }
-                Write-Host "  Exported AppData settings" -ForegroundColor Green
-            } catch {
-                Write-Host "  WARNING AppData: $($_.Exception.Message)" -ForegroundColor Yellow
-            }
-
-            Write-Host "[7/8] Exporting application profiles..." -ForegroundColor Yellow
             $appProfiles = @(Get-DetectedAppProfiles -InstalledApps $apps)
-            if ($appProfiles.Count -gt 0) {
-                $profilesDir = Join-Path $pkgPath "AppProfiles"
-                New-Item -Path $profilesDir -ItemType Directory -Force | Out-Null
-                $exported = Export-AppProfiles -Profiles $appProfiles -OutputPath $profilesDir
-                Write-Host "  Exported $exported application profiles" -ForegroundColor Green
+            Write-Host "  $($userData.Count) folders, $($browsers.Count) browser profiles, $($appProfiles.Count) app profiles" -ForegroundColor Green
+
+            Write-Host "[3/4] Writing the migration package..." -ForegroundColor Yellow
+            $selection = @{
+                Apps            = $apps
+                UserData        = $userData
+                BrowserProfiles = $browsers
+                AppProfiles     = $appProfiles
+                SettingsFlags   = Get-AllSettingsFlags
+                IncludeAppData  = $true
+                Exclusions      = $exclusions
             }
+            $requiredBytes = [long](($userData | Where-Object { -not $_.SkipCloudSync } | Measure-Object -Property SizeBytes -Sum).Sum)
+            $outputRoot = if ($PackagePath) { $PackagePath } else { $script:Config.PackagePath }
+            $progress = [hashtable]::Synchronized(@{
+                Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+                Echo = -not $Silent
+            })
+            try {
+                $storageTarget = $null
+                if ($NetworkTarget) {
+                    if (-not $TargetCredential) { throw "-NetworkTarget needs -TargetCredential (admin credentials for the target PC)." }
+                    $storageTarget = Connect-AdminShare -ComputerName $NetworkTarget -Credential $TargetCredential
+                } elseif ($SendTo) {
+                    if (-not $PairingCode) { throw "-SendTo needs -PairingCode: the code shown on the receiving PC." }
+                    $storageTarget = Connect-ReceiveSession -Computer $SendTo -PairingCode $PairingCode
+                    Write-Host "  Connected to $($storageTarget.Computer); sending directly" -ForegroundColor Green
+                }
+                $destination = Resolve-ExportDestination -StorageTarget $storageTarget -RequiredBytes $requiredBytes -LocalPackageRoot $outputRoot
+                $result = Invoke-MigrationExportToDestination -Destination $destination -Selection $selection -Progress $progress -Resume:$Resume
+            } catch {
+                Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+                exit 1
+            } finally {
+                if ($storageTarget) { Disconnect-ReceiveSession -SharePath $storageTarget.Path }
+            }
+            $pkgPath = $result.PackagePath
+            foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
-            Write-Host "[8/8] Writing manifest..." -ForegroundColor Yellow
-            ConvertTo-MigrationManifest -OutputPath $pkgPath `
-                -Apps $apps -UserData $userData -BrowserProfiles $browsers `
-                -SystemSettings $settings -AppProfiles $appProfiles `
-                -Metadata @{ CLIExport = $true; ExportDate = (Get-Date).ToString('o') }
-            Write-Host "  Manifest written" -ForegroundColor Green
-
-            # Direct network transfer if -NetworkTarget specified
             if ($NetworkTarget) {
-                Write-Host ""
-                Write-Host "  Pushing to network target: $NetworkTarget" -ForegroundColor Cyan
-                if (-not $TargetCredential) {
-                    Write-Host "ERROR: -TargetCredential is required for network transfer." -ForegroundColor Red
-                    Write-Host "Usage: -NetworkTarget 'PC2' -TargetUser 'user' -TargetCredential (Get-Credential)" -ForegroundColor Yellow
-                    exit 1
-                }
                 $targetUserName = if ($TargetUser) { $TargetUser } else { $env:USERNAME }
-                try {
-                    $state = @{
-                        Apps = $apps
-                        UserData = $userData
-                        BrowserProfiles = $browsers
-                        SystemSettings = $settings
-                        AppProfiles = $appProfiles
-                        PackagePath = $pkgPath
-                    }
-                    Push-MigrationDirect -ComputerName $NetworkTarget -Credential $TargetCredential `
-                        -TargetUserName $targetUserName -State $state
-                    Write-Host "  Network transfer complete!" -ForegroundColor Green
-                } catch {
-                    Write-Host "  Network transfer failed: $($_.Exception.Message)" -ForegroundColor Red
-                }
+                $task = Register-RemoteRestoreTask -ComputerName $NetworkTarget -Credential $TargetCredential `
+                    -TargetUserName $targetUserName -PackageName (Split-Path $pkgPath -Leaf)
+                Write-Host "  $($task.Message)" -ForegroundColor $(if ($task.Registered) { 'Green' } else { 'Yellow' })
             }
 
-            # Write progress file for external monitoring
-            @{
-                phase       = 'complete'
-                percent     = 100
-                currentItem = ''
-                succeeded   = @($apps | Where-Object { $_.InstallMethod }).Count
-                failed      = 0
-                errors      = @()
-                timestamp   = (Get-Date).ToString('o')
-            } | ConvertTo-Json | Set-Content (Join-Path $pkgPath "progress.json") -Encoding UTF8
-
+            Write-Host "[4/4] Done" -ForegroundColor Yellow
             if (-not $Silent) {
                 Write-Host ""
                 Write-Host "  Export complete: $pkgPath" -ForegroundColor Green
             }
             Write-MigrationLog -Message "CLI export completed: $pkgPath" -Level Success
 
-            # Silent mode: write structured result
             if ($Silent) {
                 @{
-                    success     = $true
+                    success     = ($result.Errors.Count -eq 0)
                     action      = 'export'
                     packagePath = $pkgPath
                     appCount    = $apps.Count
-                    dataCount   = $userData.Count
+                    dataCount   = @($result.UserData).Count
+                    errors      = @($result.Errors)
                     timestamp   = (Get-Date).ToString('o')
                 } | ConvertTo-Json | Set-Content (Join-Path $pkgPath "migration-result.json") -Encoding UTF8
                 exit 0
@@ -761,6 +599,17 @@ if ($CLI) {
                 Write-Host "ERROR: Package path not found: $PackagePath" -ForegroundColor Red
                 exit 1
             }
+            $encryptedFile = Find-EncryptedPackage -Path $PackagePath
+            if ($encryptedFile) {
+                Write-Host "  Encrypted package: $encryptedFile" -ForegroundColor Cyan
+                $password = Read-Host -Prompt '  Package password' -AsSecureString
+                try {
+                    $PackagePath = Expand-EncryptedPackage -EncryptedFile $encryptedFile -Password $password -OutputRoot $script:Config.PackagePath
+                } catch {
+                    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+                    exit 1
+                }
+            }
             $manifestPath = Join-Path $PackagePath "manifest.json"
             if (-not (Test-Path $manifestPath)) {
                 Write-Host "ERROR: No manifest.json found in $PackagePath" -ForegroundColor Red
@@ -773,143 +622,106 @@ if ($CLI) {
             Write-Host "  Apps: $($manifest.Apps.Count) | UserData: $($manifest.UserData.Count) | Browsers: $($manifest.BrowserProfiles.Count)" -ForegroundColor Cyan
             Write-Host ""
 
-            # Phase 1: Install apps
-            Write-Host "[1/6] Installing applications..." -ForegroundColor Yellow
-            $appsToInstall = @($manifest.Apps | Where-Object { $_.Selected -and $_.InstallMethod -and $_.InstallMethod -ne 'Manual' })
-            if ($appsToInstall.Count -gt 0) {
-                $installedApps = Invoke-AppInstallPipeline -Apps $appsToInstall -Config $script:Config
-                $succeeded = @($installedApps | Where-Object { $_.InstallStatus -eq 'Success' }).Count
-                $failedApps = @($installedApps | Where-Object { $_.InstallStatus -eq 'Failed' }).Count
-                Write-Host "  Installed: $succeeded succeeded, $failedApps failed" -ForegroundColor Green
-            } else {
-                Write-Host "  No auto-install applications" -ForegroundColor DarkGray
-            }
+            $progress = [hashtable]::Synchronized(@{
+                Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+                Echo = -not $Silent
+            })
+            $result = Invoke-MigrationImport -PackagePath $PackagePath -Manifest $manifest -Progress $progress -MoveFromPackage:$MoveFromPackage
+            foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
-            # Phase 2: Restore user data
-            Write-Host "[2/6] Restoring user data..." -ForegroundColor Yellow
-            $dataDir = Join-Path $PackagePath "UserData"
-            if (Test-Path $dataDir) {
-                try {
-                    $restoredData = Import-UserProfile -Items $manifest.UserData -PackagePath $dataDir
-                    $dataSuccess = @($restoredData | Where-Object { $_.ExportStatus -eq 'Success' }).Count
-                    Write-Host "  Restored $dataSuccess user data items" -ForegroundColor Green
-                } catch {
-                    Write-Host "  WARNING: $($_.Exception.Message)" -ForegroundColor Yellow
-                }
-            }
-
-            # Phase 3: Restore browsers
-            Write-Host "[3/6] Restoring browser profiles..." -ForegroundColor Yellow
-            $browserDir = Join-Path $PackagePath "BrowserProfiles"
-            if (Test-Path $browserDir) {
-                foreach ($profile in ($manifest.BrowserProfiles | Where-Object { $_.Selected })) {
-                    $profileDir = Join-Path $browserDir "$($profile.Browser)_$($profile.ProfileName)"
-                    if (Test-Path $profileDir) {
-                        try {
-                            switch ($profile.Browser) {
-                                'Chrome'  { Import-ChromeProfile -Profile $profile -PackagePath $profileDir }
-                                'Edge'    { Import-EdgeProfile -Profile $profile -PackagePath $profileDir }
-                                'Firefox' { Import-FirefoxProfile -Profile $profile -PackagePath $profileDir }
-                                'Brave'   { Import-BraveProfile -Profile $profile -PackagePath $profileDir }
-                            }
-                            Write-Host "    Restored: $($profile.Browser) - $($profile.ProfileName)" -ForegroundColor DarkGray
-                        } catch {
-                            Write-Host "    FAILED: $($profile.Browser): $($_.Exception.Message)" -ForegroundColor Yellow
-                        }
-                    }
-                }
-            }
-
-            # Phase 4: Restore system settings
-            Write-Host "[4/6] Restoring system settings..." -ForegroundColor Yellow
-            $settingsDir = Join-Path $PackagePath "SystemSettings"
-            if (Test-Path $settingsDir) {
-                $wifiSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'WiFi' }
-                if ($wifiSettings) { try { Import-WiFiProfiles -PackagePath (Join-Path $settingsDir "WiFi") -Settings $wifiSettings } catch { Write-Host "    WiFi: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $printerSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Printer' }
-                if ($printerSettings) { try { Import-PrinterConfigs -Settings $printerSettings } catch { Write-Host "    Printers: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $driveSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'MappedDrive' }
-                if ($driveSettings) { try { Import-MappedDrives -Settings $driveSettings } catch { Write-Host "    Drives: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $envSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'EnvVar' }
-                if ($envSettings) { try { Import-EnvironmentVariables -Settings $envSettings } catch { Write-Host "    EnvVars: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $winSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'WindowsSetting' }
-                if ($winSettings) { try { Import-WindowsSettings -PackagePath (Join-Path $settingsDir "WindowsSettings") -Settings $winSettings } catch { Write-Host "    WinSettings: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $accessSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Accessibility' }
-                if ($accessSettings) { try { Import-AccessibilitySettings -PackagePath (Join-Path $settingsDir "Accessibility") -Settings $accessSettings } catch { Write-Host "    Accessibility: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $regionalSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Regional' }
-                if ($regionalSettings) { try { Import-RegionalSettings -PackagePath (Join-Path $settingsDir "Regional") -Settings $regionalSettings } catch { Write-Host "    Regional: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $vpnSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'VPN' }
-                if ($vpnSettings) { try { Import-VPNConnections -PackagePath (Join-Path $settingsDir "VPN") -Settings $vpnSettings } catch { Write-Host "    VPN: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $certSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Certificate' }
-                if ($certSettings) { try { Import-UserCertificates -PackagePath (Join-Path $settingsDir "Certificates") -Settings $certSettings } catch { Write-Host "    Certificates: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $odbcSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'ODBC' }
-                if ($odbcSettings) { try { Import-ODBCSettings -PackagePath (Join-Path $settingsDir "ODBC") -Settings $odbcSettings } catch { Write-Host "    ODBC: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $folderSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'FolderOption' }
-                if ($folderSettings) { try { Import-FolderOptions -PackagePath (Join-Path $settingsDir "FolderOptions") -Settings $folderSettings } catch { Write-Host "    FolderOptions: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $inputSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'InputSetting' }
-                if ($inputSettings) { try { Import-InputSettings -PackagePath (Join-Path $settingsDir "InputSettings") -Settings $inputSettings } catch { Write-Host "    InputSettings: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $powerSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'PowerPlan' }
-                if ($powerSettings) { try { Import-PowerSettings -PackagePath (Join-Path $settingsDir "PowerPlan") -Settings $powerSettings } catch { Write-Host "    PowerPlan: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                Write-Host "  System settings restored" -ForegroundColor Green
-            }
-
-            # Phase 5: Restore AppData + App Profiles
-            Write-Host "[5/6] Restoring AppData and application profiles..." -ForegroundColor Yellow
-            $appDataDir = Join-Path $PackagePath "AppData"
-            if (Test-Path $appDataDir) {
-                $appDataItems = @($manifest.UserData | Where-Object { $_.Category -eq 'AppData' })
-                if ($appDataItems.Count -gt 0) {
-                    try { Import-AppDataSettings -Items $appDataItems -PackagePath $PackagePath; Write-Host "  AppData restored" -ForegroundColor Green } catch { Write-Host "  AppData: $($_.Exception.Message)" -ForegroundColor Yellow }
-                }
-            }
-            $profilesDir = Join-Path $PackagePath "AppProfiles"
-            if ((Test-Path $profilesDir) -and $manifest.AppProfiles.Count -gt 0) {
-                try {
-                    $imported = Import-AppProfiles -SourcePath $profilesDir -Profiles $manifest.AppProfiles
-                    Write-Host "  Restored $imported application profiles" -ForegroundColor Green
-                } catch { Write-Host "  AppProfiles: $($_.Exception.Message)" -ForegroundColor Yellow }
-            }
-
-            # Phase 6: Reports
-            Write-Host "[6/6] Generating reports..." -ForegroundColor Yellow
-            $reportDir = Join-Path $PackagePath "Reports"
-            New-Item -Path $reportDir -ItemType Directory -Force | Out-Null
             try {
-                $manualApps = $manifest.Apps | Where-Object { $_.InstallMethod -eq 'Manual' -or $_.InstallStatus -eq 'Failed' }
-                if ($manualApps) { New-ManualInstallReport -Apps $manualApps -OutputDirectory $reportDir | Out-Null }
-                New-CompletionReport -Manifest $manifest -OutputDirectory $reportDir | Out-Null
-                Write-Host "  Reports generated in $reportDir" -ForegroundColor Green
-            } catch { Write-Host "  Reports: $($_.Exception.Message)" -ForegroundColor Yellow }
-
-            # Write progress file for external monitoring
-            @{
-                phase       = 'complete'
-                percent     = 100
-                currentItem = ''
-                succeeded   = $succeeded
-                failed      = $failedApps
-                errors      = @()
-                timestamp   = (Get-Date).ToString('o')
-            } | ConvertTo-Json | Set-Content (Join-Path $PackagePath "progress.json") -Encoding UTF8
+                @{
+                    phase     = 'complete'
+                    percent   = 100
+                    succeeded = $result.Succeeded
+                    failed    = $result.Failed
+                    errors    = $result.Errors
+                    timestamp = (Get-Date).ToString('o')
+                } | ConvertTo-Json | Set-Content (Join-Path $result.WorkPath "progress.json") -Encoding UTF8
+            } catch {}
 
             if (-not $Silent) {
                 Write-Host ""
-                Write-Host "  Import complete!" -ForegroundColor Green
+                Write-Host "  Import complete: $($result.Succeeded) restored, $($result.Failed) failed" -ForegroundColor Green
+                if ($result.CompletionReportPath) { Write-Host "  Report: $($result.CompletionReportPath)" -ForegroundColor Cyan }
             }
             Write-MigrationLog -Message "CLI import completed from $PackagePath" -Level Success
 
-            # Silent mode: write structured result and exit with appropriate code
             if ($Silent) {
-                $exitCode = if ($failedApps -gt 0) { 1 } else { 0 }  # 1=partial, 0=success
+                $exitCode = if ($result.Failed -gt 0) { 1 } else { 0 }  # 1=partial, 0=success
                 @{
-                    success    = ($failedApps -eq 0)
-                    action     = 'import'
-                    succeeded  = $succeeded
-                    failed     = $failedApps
-                    timestamp  = (Get-Date).ToString('o')
-                } | ConvertTo-Json | Set-Content (Join-Path $PackagePath "migration-result.json") -Encoding UTF8
+                    success   = ($result.Failed -eq 0)
+                    action    = 'import'
+                    succeeded = $result.Succeeded
+                    failed    = $result.Failed
+                    errors    = $result.Errors
+                    timestamp = (Get-Date).ToString('o')
+                } | ConvertTo-Json | Set-Content (Join-Path $result.WorkPath "migration-result.json") -Encoding UTF8
                 exit $exitCode
             }
+        }
+
+        # =============================================
+        # CLI: RECEIVE - Accept a package from another PC on the LAN, then restore it
+        # =============================================
+        'receive' {
+            if (-not $isAdmin) {
+                Write-Host "ERROR: Receiving needs administrator rights (it opens a temporary network share)." -ForegroundColor Red
+                exit 1
+            }
+            $progress = [hashtable]::Synchronized(@{
+                Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+                Echo = -not $Silent
+            })
+            $session = Start-ReceiveSession
+            $worker = $null
+            $state = $null
+            try {
+                Write-Host ""
+                Write-Host "  Pairing code:  $($session.Code)" -ForegroundColor Cyan
+                Write-Host "  This PC:       $($session.Computer)  ($($session.Addresses -join ', '))" -ForegroundColor Cyan
+                Write-Host "  On the old PC run:  .\Win11Migrator.ps1 -CLI export -SendTo $($session.Computer) -PairingCode $($session.Code)" -ForegroundColor DarkGray
+                Write-Host "  Waiting for the other PC... (Ctrl+C cancels)" -ForegroundColor Yellow
+                $lastPhase = $null
+                $started = $null
+                while ($true) {
+                    $state = Get-IncomingPackageState -IncomingPath $session.IncomingPath
+                    if ($state.State -ne 'Waiting' -and -not $started) { $started = (Get-Date).ToUniversalTime() }
+                    if ($state.ManifestReady -and -not $worker) {
+                        try {
+                            $early = Read-MigrationManifest -ManifestPath (Join-Path $state.PackagePath 'manifest.json')
+                            $worker = Start-AppInstallWorker -Apps $early.Apps -Progress $progress
+                            Write-Host "  Manifest received; installing apps while files arrive" -ForegroundColor Green
+                        } catch {
+                            Write-MigrationLog -Message "Manifest not readable yet, retrying: $($_.Exception.Message)" -Level Debug
+                        }
+                    }
+                    if ($state.State -eq 'Complete') { break }
+                    if ($state.State -eq 'Failed' -and $lastPhase -ne 'Failed') {
+                        Write-Host "  The sender stopped: $($state.Errors -join '; '). Waiting for it to resume..." -ForegroundColor Yellow
+                        $lastPhase = 'Failed'
+                    } elseif ($state.State -eq 'Receiving' -and $state.Phase -ne $lastPhase) {
+                        Write-Host "  [$($state.SourceComputer)] $($state.Phase)" -ForegroundColor DarkGray
+                        $lastPhase = $state.Phase
+                    }
+                    if (-not $Silent -and $started) {
+                        $rate = Format-TransferRate -BytesDone $state.BytesDone -BytesTotal $state.BytesTotal -StartedUtc $started
+                        if ($rate) { Write-Progress -Activity 'Receiving' -Status $rate }
+                    }
+                    Start-Sleep -Seconds 1
+                }
+            } finally {
+                Stop-ReceiveSession -Session $session
+            }
+            Write-Progress -Activity 'Receiving' -Completed
+
+            $manifest = Read-MigrationManifest -ManifestPath (Join-Path $state.PackagePath 'manifest.json')
+            Write-Host "  Package received from $($manifest.SourceComputerName); restoring" -ForegroundColor Green
+            $result = Invoke-MigrationImport -PackagePath $state.PackagePath -Manifest $manifest -Progress $progress -AppWorker $worker -MoveFromPackage
+            foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
+            Write-Host "  Restore complete: $($result.Succeeded) restored, $($result.Failed) failed" -ForegroundColor Green
+            if ($result.CompletionReportPath) { Write-Host "  Report: $($result.CompletionReportPath)" -ForegroundColor Cyan }
+            exit $(if ($result.Failed -gt 0) { 1 } else { 0 })
         }
 
         # =============================================
@@ -1168,6 +980,7 @@ if ($CLI) {
             Write-Host "  scan        - Scan this PC and report all discoverable items" -ForegroundColor White
             Write-Host "  export      - Export a full migration package" -ForegroundColor White
             Write-Host "  import      - Import/restore from a migration package" -ForegroundColor White
+            Write-Host "  receive     - Wait for another PC on the network to send its package, then restore it" -ForegroundColor White
             Write-Host "  validate    - Validate a migration package integrity" -ForegroundColor White
             Write-Host "  status      - Show migration status from registry" -ForegroundColor White
             Write-Host "  diff        - Compare two migration packages" -ForegroundColor White

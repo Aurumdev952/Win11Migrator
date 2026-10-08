@@ -6,7 +6,11 @@
     "ExcludeCategories": []
   },
   "UserData": {
-    "Folders": ["Desktop", "Documents", "Downloads"],
+    "Folders": [
+      "Desktop",
+      "Documents",
+      "Downloads"
+    ],
     "IncludeAppData": true
   },
   "BrowserProfiles": {
@@ -29,5 +33,16 @@
   },
   "AppProfiles": {
     "IncludeAll": true
+  },
+  "Exclusions": {
+    "Directories": [
+      "target",
+      ".angular",
+      ".svelte-kit",
+      ".dart_tool",
+      ".expo",
+      "DerivedData"
+    ],
+    "Files": []
   }
 }

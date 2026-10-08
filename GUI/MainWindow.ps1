@@ -80,7 +80,7 @@ function Show-MainWindow {
 
     # --- Shared state (synchronized for thread-safe access from background runspaces) ---
     $state = [hashtable]::Synchronized(@{
-        Mode              = $null        # 'Export' or 'Import'
+        Mode              = $null        # 'Export', 'Import' or 'Receive'
         Config            = $Config
         MigratorRoot      = $MigratorRoot
         Window            = $window
@@ -88,6 +88,7 @@ function Show-MainWindow {
         CurrentPageIndex  = 0
         ExportPages       = @('WelcomePage', 'LicensePage', 'ScanProgressPage', 'AppSelectionPage', 'DataSelectionPage', 'StorageSelectionPage', 'ExportProgressPage', 'CompletionPage')
         ImportPages       = @('WelcomePage', 'LicensePage', 'ImportSourcePage', 'ImportProgressPage', 'CompletionPage')
+        ReceivePages      = @('WelcomePage', 'LicensePage', 'ReceivePage', 'ImportProgressPage', 'CompletionPage')
         Pages             = @('WelcomePage')  # Start with just welcome
         Apps              = @()
         UserData          = @()
@@ -213,6 +214,40 @@ function Show-MainWindow {
 
     # Expose navigation to pages via state
     $state['NavigateTo'] = $navigateTo
+
+    # Small modal password prompt; returns a SecureString, or $null when cancelled
+    $state['ReadPasswordDialog'] = {
+        param([string]$Prompt)
+        $dialog = [System.Windows.Window]::new()
+        $dialog.Title = 'Package password'
+        $dialog.SizeToContent = 'WidthAndHeight'
+        $dialog.ResizeMode = 'NoResize'
+        $dialog.WindowStartupLocation = 'CenterOwner'
+        $dialog.Owner = $window
+        $panel = [System.Windows.Controls.StackPanel]::new()
+        $panel.Margin = [System.Windows.Thickness]::new(16)
+        $label = [System.Windows.Controls.TextBlock]::new()
+        $label.Text = $Prompt
+        $label.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $box = [System.Windows.Controls.PasswordBox]::new()
+        $box.Width = 320
+        $buttons = [System.Windows.Controls.StackPanel]::new()
+        $buttons.Orientation = 'Horizontal'
+        $buttons.HorizontalAlignment = 'Right'
+        $buttons.Margin = [System.Windows.Thickness]::new(0, 12, 0, 0)
+        $ok = [System.Windows.Controls.Button]::new()
+        $ok.Content = 'OK'; $ok.Width = 80; $ok.IsDefault = $true
+        $ok.Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
+        $cancel = [System.Windows.Controls.Button]::new()
+        $cancel.Content = 'Cancel'; $cancel.Width = 80; $cancel.IsCancel = $true
+        $cancel.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+        $null = $buttons.Children.Add($ok); $null = $buttons.Children.Add($cancel)
+        $null = $panel.Children.Add($label); $null = $panel.Children.Add($box); $null = $panel.Children.Add($buttons)
+        $dialog.Content = $panel
+        $null = $box.Focus()
+        if ($dialog.ShowDialog() -and $box.SecurePassword.Length -gt 0) { return $box.SecurePassword }
+        return $null
+    }.GetNewClosure()
     $state['LoadPage'] = $loadPage
     $state['BtnNext'] = $btnNext
     $state['BtnBack'] = $btnBack
@@ -222,10 +257,10 @@ function Show-MainWindow {
     $state['SetMode'] = {
         param([string]$Mode, [hashtable]$State)
         $State.Mode = $Mode
-        if ($Mode -eq 'Export') {
-            $State.Pages = $State.ExportPages
-        } else {
-            $State.Pages = $State.ImportPages
+        $State.Pages = switch ($Mode) {
+            'Export'  { $State.ExportPages }
+            'Receive' { $State.ReceivePages }
+            default   { $State.ImportPages }
         }
         # Navigate to page 1 (after welcome)
         $State.BtnNext.Visibility = 'Visible'
@@ -303,6 +338,15 @@ function Show-MainWindow {
             }
         } catch {}
         $state.ActiveJob = $null
+    }
+    # A receive session opens a share, an account and firewall rules; never leave them behind
+    if ($state.ReceiveSession) {
+        try { Stop-ReceiveSession -Session $state.ReceiveSession } catch {}
+        $state.ReceiveSession = $null
+    }
+    if ($state.AppWorker) {
+        try { $state.AppWorker.PowerShell.Stop(); $state.AppWorker.PowerShell.Dispose(); $state.AppWorker.Runspace.Dispose() } catch {}
+        $state.AppWorker = $null
     }
     # Stop and dispose any active scan runspaces
     if ($state.ScanCtx) {

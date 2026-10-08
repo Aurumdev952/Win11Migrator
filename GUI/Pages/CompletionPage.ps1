@@ -114,18 +114,13 @@ function Initialize-CompletionPage {
                     "4. Double-click Win11Migrator.bat to start the import"
                 ) -join "`n"
             }
-            'NetworkDirect' {
-                if ($State.RemoteRestoreLaunched) {
-                    $exportStepsText = "Restore is running automatically on the target machine. Check the target PC for progress."
-                } else {
-                    $exportStepsText = @(
-                        "Win11Migrator has been copied to the target machine.",
-                        "To complete the restore:",
-                        "1. Log into the target machine",
-                        "2. Open the Win11Migrator folder in your user profile",
-                        "3. Double-click Win11Migrator.bat to start the import"
-                    ) -join "`n"
+            'AdminShare' {
+                $exportStepsText = if ($State.RemoteRestoreMessage) { $State.RemoteRestoreMessage } else {
+                    "The package and Win11Migrator are in C:\Win11Migrator on the target PC. Sign in there and run Win11Migrator.bat, then choose Import."
                 }
+            }
+            'LanReceive' {
+                $exportStepsText = "Everything was sent to $($State.StorageTarget.Computer). The restore continues on that PC; follow its progress there."
             }
             'NetworkShare' {
                 $exportStepsText = @(
