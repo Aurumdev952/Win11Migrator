@@ -66,14 +66,9 @@ function New-CompletionReport {
     $sourceComputer = if ($Manifest.SourceComputerName) { $Manifest.SourceComputerName } else { 'Unknown' }
 
     # Load template
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    if (-not $scriptDir) {
-        $scriptDir = if ($script:MigratorRoot) {
-            Join-Path $script:MigratorRoot 'Reports'
-        } else {
-            $PSScriptRoot
-        }
-    }
+    # Inside a function MyInvocation.MyCommand.Definition is the function's source, not its path;
+    # $PSScriptRoot is the folder of the file that defines the function
+    $scriptDir = $PSScriptRoot
     $templatePath = Join-Path $scriptDir 'Templates\CompletionReport.html'
     if (-not (Test-Path $templatePath)) {
         throw "CompletionReport template not found at: $templatePath"
