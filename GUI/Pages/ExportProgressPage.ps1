@@ -53,12 +53,10 @@ function Initialize-ExportProgressPage {
 
     $requiredBytes = [long](@($State.UserData | Where-Object { $_.Selected -and -not $_.SkipCloudSync }) |
         Measure-Object -Property SizeBytes -Sum).Sum
-    $pushDirect = ($State.StorageTarget -and $State.StorageTarget.Type -eq 'NetworkDirect')
 
     # Resolve the destination up front so "not enough space" stops the export before anything is copied
     try {
-        $target = if ($pushDirect) { $null } else { $State.StorageTarget }
-        $destination = Resolve-ExportDestination -StorageTarget $target -RequiredBytes $requiredBytes -LocalPackageRoot $State.Config.PackagePath
+        $destination = Resolve-ExportDestination -StorageTarget $State.StorageTarget -RequiredBytes $requiredBytes -LocalPackageRoot $State.Config.PackagePath
     } catch {
         $ui.Title.Text = "Cannot start export"
         $ui.Phase.Text = $_.Exception.Message
@@ -97,7 +95,6 @@ function Initialize-ExportProgressPage {
     $runspace.SessionStateProxy.SetVariable('Selection', $selection)
     $runspace.SessionStateProxy.SetVariable('Destination', $destination)
     $runspace.SessionStateProxy.SetVariable('Resume', $resume)
-    $runspace.SessionStateProxy.SetVariable('PushDirect', $pushDirect)
     $runspace.SessionStateProxy.SetVariable('prog', $exportProgress)
     $runspace.SessionStateProxy.SetVariable('MigratorRoot', $State.MigratorRoot)
     $runspace.SessionStateProxy.SetVariable('Config', $State.Config)
@@ -110,7 +107,7 @@ function Initialize-ExportProgressPage {
                           'Get-MigrationExclusions', 'Invoke-MigrationExport', 'Protect-MigrationPackage') {
             . (Join-Path $MigratorRoot "Core\$core.ps1")
         }
-        foreach ($module in 'UserData', 'BrowserProfiles', 'SystemSettings', 'AppProfiles', 'StorageTargets', 'USMT') {
+        foreach ($module in 'UserData', 'BrowserProfiles', 'SystemSettings', 'AppProfiles', 'StorageTargets', 'USMT', 'NetworkTransfer') {
             Get-ChildItem (Join-Path $MigratorRoot "Modules\$module\*.ps1") -ErrorAction SilentlyContinue | ForEach-Object { . $_.FullName }
         }
         $script:MigratorRoot = $MigratorRoot
@@ -127,17 +124,13 @@ function Initialize-ExportProgressPage {
         $errors = @($result.Errors)
         if ($Destination.Type -eq 'LanReceive') { & net.exe use $Destination.Root /delete /y 2>&1 | Out-Null }
 
-        if ($PushDirect) {
-            $prog.Phase = 'Pushing to the target PC...'
-            . (Join-Path $MigratorRoot "Modules\NetworkTransfer\Push-MigrationDirect.ps1")
-            . (Join-Path $MigratorRoot "Modules\NetworkTransfer\Initialize-RemoteProfile.ps1")
-            . (Join-Path $MigratorRoot "Modules\NetworkTransfer\Install-AppsRemotely.ps1")
-            $pushResult = Push-MigrationDirect -ComputerName $State.NetworkTarget.ComputerName `
-                -Credential $State.NetworkTarget.Credential `
-                -TargetUserName $State.NetworkTarget.TargetUserName `
-                -State $State -Progress $prog
-            if (-not $pushResult.Success) { $errors += "NetworkDirect: $($pushResult.Errors -join '; ')" }
-            $State['RemoteRestoreLaunched'] = $pushResult.RemoteRestoreLaunched
+        if ($Destination.Type -eq 'AdminShare') {
+            $prog.Phase = 'Scheduling the restore on the target PC...'
+            $task = Register-RemoteRestoreTask -ComputerName $State.NetworkTarget.ComputerName -Credential $State.NetworkTarget.Credential `
+                -TargetUserName $State.NetworkTarget.TargetUserName -PackageName (Split-Path $result.PackagePath -Leaf)
+            $State['RemoteRestoreLaunched'] = $task.Registered
+            $State['RemoteRestoreMessage'] = $task.Message
+            Add-ProgressLog $prog "  $($task.Message)"
         }
 
         $prog.Phase = 'Export complete!'

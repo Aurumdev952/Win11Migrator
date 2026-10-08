@@ -574,7 +574,10 @@ if ($CLI) {
             })
             try {
                 $storageTarget = $null
-                if ($SendTo) {
+                if ($NetworkTarget) {
+                    if (-not $TargetCredential) { throw "-NetworkTarget needs -TargetCredential (admin credentials for the target PC)." }
+                    $storageTarget = Connect-AdminShare -ComputerName $NetworkTarget -Credential $TargetCredential
+                } elseif ($SendTo) {
                     if (-not $PairingCode) { throw "-SendTo needs -PairingCode: the code shown on the receiving PC." }
                     $storageTarget = Connect-ReceiveSession -Computer $SendTo -PairingCode $PairingCode
                     Write-Host "  Connected to $($storageTarget.Computer); sending directly" -ForegroundColor Green
@@ -585,36 +588,16 @@ if ($CLI) {
                 Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
                 exit 1
             } finally {
-                if ($storageTarget) { Disconnect-ReceiveSession -SharePath $storageTarget.Path }
+                if ($storageTarget) { & net.exe use $storageTarget.Path /delete /y 2>&1 | Out-Null }
             }
             $pkgPath = $result.PackagePath
             foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
-            # Direct network transfer if -NetworkTarget specified
             if ($NetworkTarget) {
-                Write-Host ""
-                Write-Host "  Pushing to network target: $NetworkTarget" -ForegroundColor Cyan
-                if (-not $TargetCredential) {
-                    Write-Host "ERROR: -TargetCredential is required for network transfer." -ForegroundColor Red
-                    Write-Host "Usage: -NetworkTarget 'PC2' -TargetUser 'user' -TargetCredential (Get-Credential)" -ForegroundColor Yellow
-                    exit 1
-                }
                 $targetUserName = if ($TargetUser) { $TargetUser } else { $env:USERNAME }
-                try {
-                    $state = @{
-                        Apps = $apps
-                        UserData = $result.UserData
-                        BrowserProfiles = $browsers
-                        SystemSettings = $result.SystemSettings
-                        AppProfiles = $appProfiles
-                        PackagePath = $pkgPath
-                    }
-                    Push-MigrationDirect -ComputerName $NetworkTarget -Credential $TargetCredential `
-                        -TargetUserName $targetUserName -State $state
-                    Write-Host "  Network transfer complete!" -ForegroundColor Green
-                } catch {
-                    Write-Host "  Network transfer failed: $($_.Exception.Message)" -ForegroundColor Red
-                }
+                $task = Register-RemoteRestoreTask -ComputerName $NetworkTarget -Credential $TargetCredential `
+                    -TargetUserName $targetUserName -PackageName (Split-Path $pkgPath -Leaf)
+                Write-Host "  $($task.Message)" -ForegroundColor $(if ($task.Registered) { 'Green' } else { 'Yellow' })
             }
 
             Write-Host "[4/4] Done" -ForegroundColor Yellow

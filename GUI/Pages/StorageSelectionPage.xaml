@@ -209,9 +209,9 @@
                             <Path Grid.Column="0" Data="{StaticResource FolderIcon}" Fill="{StaticResource PrimaryBrush}"
                                   Width="28" Height="28" Stretch="Uniform" Margin="0,0,12,0" VerticalAlignment="Center" />
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                <TextBlock Text="Direct Network Transfer" Style="{StaticResource HeadingText}" />
-                                <TextBlock Text="Push directly to another PC on the network"
-                                           Style="{StaticResource CaptionText}" />
+                                <TextBlock Text="Push to a domain PC (admin share)" Style="{StaticResource HeadingText}" />
+                                <TextBlock Text="For a PC nobody is at: needs its admin credentials; restores when the user signs in"
+                                           Style="{StaticResource CaptionText}" TextWrapping="Wrap" />
                             </StackPanel>
                         </Grid>
                     </Border>
