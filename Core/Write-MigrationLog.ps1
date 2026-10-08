@@ -28,6 +28,10 @@ if (-not $script:LogSessionId) {
     $script:LogSessionId = [guid]::NewGuid().ToString('N').Substring(0, 8)
 }
 
+if (-not $script:LogFileMutex) {
+    $script:LogFileMutex = [System.Threading.Mutex]::new($false, 'Win11Migrator.LogFile')
+}
+
 # Silent mode flag (set by -Silent switch)
 if (-not (Test-Path variable:script:SilentMode)) {
     $script:SilentMode = $false
@@ -57,7 +61,11 @@ function Write-MigrationLog {
                      else { $null }
 
     if ($effectivePath) {
+        # Export, import and background workers run in separate runspaces that share one log file.
+        $lockTaken = $false
         try {
+            try { $lockTaken = $script:LogFileMutex.WaitOne(2000) } catch [System.Threading.AbandonedMutexException] { $lockTaken = $true }
+
             # Determine format
             $effectiveFormat = if ($Format) { $Format }
                               elseif ($script:Config -and $script:Config.LogFormat) { $script:Config.LogFormat }
@@ -87,6 +95,8 @@ function Write-MigrationLog {
             }
         } catch {
             # Silently continue if log file is locked
+        } finally {
+            if ($lockTaken) { $script:LogFileMutex.ReleaseMutex() }
         }
     }
 
