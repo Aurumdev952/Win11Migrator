@@ -17,7 +17,7 @@
         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="960">
 
             <!-- Title -->
-            <TextBlock Text="AuthorityGate User Migrator" Style="{StaticResource TitleText}"
+            <TextBlock Text="Win11Migrator" Style="{StaticResource TitleText}"
                        HorizontalAlignment="Center" Margin="0,0,0,8" />
             <TextBlock Text="Transfer your apps, files, and settings to your new Windows 11 PC"
                        Style="{StaticResource BodyText}" HorizontalAlignment="Center"
