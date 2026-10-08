@@ -23,10 +23,10 @@ function Connect-AdminShare {
     )
 
     $share = "\\$ComputerName\C`$"
-    & net.exe use $share /delete /y 2>&1 | Out-Null
-    $output = & net.exe use $share $Credential.GetNetworkCredential().Password "/user:$($Credential.UserName)" /persistent:no 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Cannot open $share with these credentials: $(($output | Out-String).Trim())"
+    $null = Invoke-NetUse @($share, '/delete', '/y')
+    $mapped = Invoke-NetUse @($share, $Credential.GetNetworkCredential().Password, "/user:$($Credential.UserName)", '/persistent:no')
+    if ($mapped.ExitCode -ne 0) {
+        throw "Cannot open $share with these credentials: $($mapped.Output)"
     }
     return @{ Type = 'AdminShare'; Path = $share; Computer = $ComputerName }
 }

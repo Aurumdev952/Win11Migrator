@@ -43,36 +43,17 @@ function Initialize-ImportSourcePage {
         . (Join-Path $State.MigratorRoot "Core\Write-MigrationLog.ps1")
         . (Join-Path $State.MigratorRoot "Core\Read-MigrationManifest.ps1")
 
-        # Check if this is an encrypted package file
-        if ((Test-Path $PkgPath) -and -not (Test-Path (Join-Path $PkgPath "manifest.json"))) {
-            # Might be an encrypted .w11mcrypt file or a directory without manifest
-            $w11mFiles = @(Get-ChildItem $PkgPath -Filter "*.w11mcrypt" -ErrorAction SilentlyContinue)
-            if ($w11mFiles.Count -gt 0) {
-                # Prompt for password
-                $pwdDialog = [System.Windows.MessageBox]::Show(
-                    "Encrypted migration package detected.`nYou will be prompted for the decryption password.",
-                    "Encrypted Package",
-                    [System.Windows.MessageBoxButton]::OKCancel,
-                    [System.Windows.MessageBoxImage]::Information
-                )
-                if ($pwdDialog -eq [System.Windows.MessageBoxResult]::Cancel) { return }
-
-                # Use a simple input for password (in production, use a proper dialog)
-                try {
-                    $encFile = $w11mFiles[0].FullName
-                    $decryptDir = Join-Path $PkgPath "Decrypted"
-                    # For now, log that decryption would happen here
-                    # The actual password prompt would need a custom WPF dialog
-                    Write-MigrationLog -Message "Encrypted package detected: $encFile" -Level Info
-                } catch {
-                    [System.Windows.MessageBox]::Show(
-                        "Decryption failed: $($_.Exception.Message)",
-                        "Error",
-                        [System.Windows.MessageBoxButton]::OK,
-                        [System.Windows.MessageBoxImage]::Error
-                    )
-                    return
-                }
+        . (Join-Path $State.MigratorRoot "Core\Unprotect-MigrationPackage.ps1")
+        $encryptedFile = Find-EncryptedPackage -Path $PkgPath
+        if ($encryptedFile) {
+            $password = & $State.ReadPasswordDialog "Enter the password used when this package was exported:`n$encryptedFile"
+            if (-not $password) { return }
+            try {
+                $PkgPath = Expand-EncryptedPackage -EncryptedFile $encryptedFile -Password $password -OutputRoot $State.Config.PackagePath
+            } catch {
+                [System.Windows.MessageBox]::Show($_.Exception.Message, "Decryption failed",
+                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+                return
             }
         }
 

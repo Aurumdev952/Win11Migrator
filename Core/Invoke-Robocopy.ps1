@@ -39,6 +39,7 @@ function New-RobocopyArgumentList {
         [switch]$Mirror,
         [switch]$CopySecurity,
         [switch]$ListOnly,
+        [switch]$NoCompress,
         $Config = $script:Config
     )
 
@@ -63,7 +64,7 @@ function New-RobocopyArgumentList {
         $argList.Add('/L')
         $argList.Add('/NFL')
     }
-    elseif ((Test-UncPath $Source) -or (Test-UncPath $Destination)) {
+    elseif (-not $NoCompress -and ((Test-UncPath $Source) -or (Test-UncPath $Destination))) {
         $argList.Add('/COMPRESS')
     }
     if ((Get-MigrationSetting $Config 'RobocopyUnbufferedIO' $false) -and -not $ListOnly) {
@@ -211,6 +212,12 @@ function Invoke-Robocopy {
     }
 
     $run = Invoke-RobocopyProcess -ArgumentList $argList -OnLine $onLine
+    if ($run.ExitCode -eq 16 -and $argList -contains '/COMPRESS') {
+        # Robocopy builds older than Windows 10 1809 / Server 2019 reject /COMPRESS as an invalid parameter
+        $argList = New-RobocopyArgumentList -Source $Source -Destination $Destination -TargetKind $TargetKind `
+            -Exclusions $Exclusions -Mirror:$Mirror -CopySecurity:$CopySecurity -NoCompress
+        $run = Invoke-RobocopyProcess -ArgumentList $argList -OnLine $onLine
+    }
     $summary = ConvertFrom-RobocopySummary $run.Tail
 
     return [PSCustomObject]@{
@@ -238,7 +245,12 @@ function Measure-RobocopySource {
 
     $phantom = Join-Path ([System.IO.Path]::GetTempPath()) "w11m_measure_$([guid]::NewGuid().ToString('N'))"
     $argList = New-RobocopyArgumentList -Source $Source -Destination $phantom -Exclusions $Exclusions -ListOnly
-    $run = Invoke-RobocopyProcess -ArgumentList $argList
+    try {
+        $run = Invoke-RobocopyProcess -ArgumentList $argList
+    } finally {
+        # robocopy /L still creates the top-level destination folder
+        Remove-Item -LiteralPath $phantom -Force -Recurse -ErrorAction SilentlyContinue
+    }
     $summary = ConvertFrom-RobocopySummary $run.Tail
     if (-not $summary) { return [PSCustomObject]@{ Bytes = 0L; Files = 0L } }
     return [PSCustomObject]@{ Bytes = $summary.BytesCopied; Files = $summary.FilesCopied }

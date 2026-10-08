@@ -78,6 +78,10 @@ Describe 'New-RobocopyArgumentList' {
         (New-RobocopyArgumentList -Source 'C:\src' -Destination 'D:\dst' -Config $config) | Should -Not -Contain '/COMPRESS'
     }
 
+    It 'can leave out SMB compression for robocopy builds that lack it' {
+        (New-RobocopyArgumentList -Source 'C:\src' -Destination '\\PC2\share' -NoCompress -Config $config) | Should -Not -Contain '/COMPRESS'
+    }
+
     It 'mirrors only on request' {
         (New-RobocopyArgumentList -Source 'C:\a' -Destination 'D:\b' -Mirror -Config $config) | Should -Contain '/MIR'
     }
@@ -192,5 +196,25 @@ Describe 'Format-TransferRate' {
     It 'omits the estimate when the total is unknown' {
         $start = [datetime]'2026-10-08T10:00:00Z'
         Format-TransferRate -BytesDone (2GB) -BytesTotal 0 -StartedUtc $start -NowUtc $start.AddSeconds(10) | Should -Not -Match 'left'
+    }
+}
+
+Describe 'Invoke-Robocopy' {
+    It 'retries without /COMPRESS when robocopy rejects it as an invalid parameter' {
+        $script:calls = [System.Collections.ArrayList]::new()
+        Mock Invoke-RobocopyProcess {
+            $null = $script:calls.Add($ArgumentList)
+            if ($ArgumentList -contains '/COMPRESS') { return [PSCustomObject]@{ ExitCode = 16; Tail = @('ERROR : Invalid Parameter #12 : "/COMPRESS"') } }
+            [PSCustomObject]@{ ExitCode = 1; Tail = @(
+                '------------------------------------------------------------------------------',
+                '    Dirs :         1         1         0         0         0         0',
+                '   Files :         2         2         0         0         0         0',
+                '   Bytes :       200       200         0         0         0         0') }
+        }
+        $r = Invoke-Robocopy -Source 'C:\src' -Destination '\\PC2\share\pkg'
+        $script:calls.Count | Should -Be 2
+        $script:calls[1] | Should -Not -Contain '/COMPRESS'
+        $r.Success | Should -BeTrue
+        $r.Bytes | Should -Be 200
     }
 }

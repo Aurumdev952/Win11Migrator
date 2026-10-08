@@ -209,3 +209,41 @@ Describe 'Invoke-MigrationImport' {
         $r.Failed | Should -Be 0
     }
 }
+
+Describe 'Encrypted packages' {
+    BeforeAll {
+        . "$ProjectRoot/Core/Protect-MigrationPackage.ps1"
+        . "$ProjectRoot/Core/Unprotect-MigrationPackage.ps1"
+    }
+
+    It 'are found next to where the user pointed, decrypted locally, and ready to import' {
+        $pkg = Join-Path (New-TempDir) 'Win11Migration_PC1_20261008_100000'
+        Add-File (P $pkg, 'manifest.json') '{}'
+        Add-File (P $pkg, 'UserData', 'Documents', 'a.txt')
+        $usb = New-TempDir
+        $password = ConvertTo-SecureString 'correct horse' -AsPlainText -Force
+        (Protect-MigrationPackage -PackagePath $pkg -Password $password -OutputFile (P $usb, 'Win11Migration_PC1_20261008_100000.w11mcrypt')).Success | Should -BeTrue
+
+        $found = Find-EncryptedPackage -Path $usb
+        $found | Should -BeLike '*.w11mcrypt'
+        $ready = Expand-EncryptedPackage -EncryptedFile $found -Password $password -OutputRoot (New-TempDir)
+        Test-Path (P $ready, 'manifest.json') | Should -BeTrue
+        Test-Path (P $ready, 'UserData', 'Documents', 'a.txt') | Should -BeTrue
+    }
+
+    It 'reject a wrong password' {
+        $pkg = New-TempDir
+        Add-File (P $pkg, 'manifest.json') '{}'
+        $file = P (New-TempDir), 'p.w11mcrypt'
+        Protect-MigrationPackage -PackagePath $pkg -Password (ConvertTo-SecureString 'right' -AsPlainText -Force) -OutputFile $file | Out-Null
+        { Expand-EncryptedPackage -EncryptedFile $file -Password (ConvertTo-SecureString 'wrong' -AsPlainText -Force) -OutputRoot (New-TempDir) } |
+            Should -Throw '*password*'
+    }
+
+    It 'are not looked for when the folder is already a package' {
+        $pkg = New-TempDir
+        Add-File (P $pkg, 'manifest.json') '{}'
+        Add-File (P $pkg, 'old.w11mcrypt')
+        Find-EncryptedPackage -Path $pkg | Should -BeNullOrEmpty
+    }
+}

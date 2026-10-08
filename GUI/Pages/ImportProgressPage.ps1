@@ -66,7 +66,7 @@ function Initialize-ImportProgressPage {
     $ps = [System.Management.Automation.PowerShell]::Create()
     $ps.Runspace = $runspace
     $ps.AddScript({
-        foreach ($core in 'Initialize-Environment', 'Write-MigrationLog', 'ConvertTo-MigrationManifest', 'Invoke-WithRetry',
+        foreach ($core in 'Initialize-Environment', 'Write-MigrationLog', 'ConvertTo-MigrationManifest', 'Read-MigrationManifest', 'Invoke-WithRetry',
                           'Invoke-Robocopy', 'Get-MigrationExclusions', 'Get-PackageFingerprint', 'New-RollbackSnapshot',
                           'Get-OSMigrationContext', 'Convert-CrossOSSettings', 'Invoke-MigrationImport') {
             . (Join-Path $MigratorRoot "Core\$core.ps1")
@@ -78,14 +78,18 @@ function Initialize-ImportProgressPage {
         $script:MigratorRoot = $MigratorRoot
         $script:Config = $Config
 
-        $result = Invoke-MigrationImport -PackagePath $State.PackagePath -Manifest $State.Manifest -Progress $prog `
+        # Read the manifest here: objects built from the page's class definitions do not bind to this
+        # runspace's [BrowserProfile], [SystemSetting] or [MigrationManifest] parameters
+        $manifest = Read-MigrationManifest -ManifestPath (Join-Path $State.PackagePath 'manifest.json')
+        $result = Invoke-MigrationImport -PackagePath $State.PackagePath -Manifest $manifest -Progress $prog `
             -AppWorker $State.AppWorker -MoveFromPackage:([bool]$State.MoveFromPackage)
         $State.AppWorker = $null
         $State['CompletionReportPath'] = $result.CompletionReportPath
         $State['ManualReportPath'] = $result.ManualReportPath
         $State['RollbackSnapshotPath'] = $result.RollbackSnapshotPath
-        $State.Apps = $State.Manifest.Apps
-        $State.UserData = $State.Manifest.UserData
+        $State.Manifest = $manifest
+        $State.Apps = $manifest.Apps
+        $State.UserData = $manifest.UserData
 
         try {
             @{

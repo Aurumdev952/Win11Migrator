@@ -122,7 +122,7 @@ function Initialize-ExportProgressPage {
         $State.SystemSettings = $result.SystemSettings
         if ($password) { $State['EncryptedPackagePath'] = $result.PackagePath }
         $errors = @($result.Errors)
-        if ($Destination.Type -eq 'LanReceive') { & net.exe use $Destination.Root /delete /y 2>&1 | Out-Null }
+        if ($Destination.Type -eq 'LanReceive') { Disconnect-ReceiveSession -SharePath $Destination.Root }
 
         if ($Destination.Type -eq 'AdminShare') {
             $prog.Phase = 'Scheduling the restore on the target PC...'

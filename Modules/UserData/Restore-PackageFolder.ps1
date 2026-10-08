@@ -25,17 +25,36 @@ function Test-SameVolume {
 function Move-PackageTree {
     # Moves every entry whose destination does not exist yet (a rename on one volume) and recurses
     # into folders that exist on both sides. Anything left behind is a real conflict for robocopy.
+    # Returns the destination paths that were moved.
     param([string]$Source, [string]$Destination)
+    $moved = [System.Collections.Generic.List[string]]::new()
     foreach ($child in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction SilentlyContinue)) {
         $target = Join-Path $Destination $child.Name
         if (-not (Test-Path -LiteralPath $target)) {
-            try { Move-Item -LiteralPath $child.FullName -Destination $target -ErrorAction Stop } catch { }
+            try {
+                Move-Item -LiteralPath $child.FullName -Destination $target -ErrorAction Stop
+                $moved.Add($target)
+            } catch {
+                Write-MigrationLog -Message "Could not move $($child.FullName); it will be copied instead: $($_.Exception.Message)" -Level Debug
+            }
         } elseif ($child.PSIsContainer -and (Test-Path -LiteralPath $target -PathType Container)) {
-            Move-PackageTree -Source $child.FullName -Destination $target
+            foreach ($m in (Move-PackageTree -Source $child.FullName -Destination $target)) { $moved.Add($m) }
             if (-not (Get-ChildItem -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
                 Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
             }
         }
+    }
+    return , $moved.ToArray()
+}
+
+function Reset-InheritedAcl {
+    # A rename keeps the ACL from where the file was received (the incoming folder grants wide access);
+    # a copy would have inherited the profile's. Make moved entries inherit from their new parent.
+    param([string[]]$Paths)
+    if (-not $Paths -or -not (Get-Command icacls.exe -ErrorAction SilentlyContinue)) { return }
+    $ErrorActionPreference = 'Continue'
+    foreach ($p in $Paths) {
+        & icacls.exe $p /reset /T /C /Q 2>&1 | Out-Null
     }
 }
 
@@ -44,8 +63,8 @@ function Restore-PackageFolder {
     .SYNOPSIS
         Restores a package folder into Destination, merging with what is already there.
     .PARAMETER Move
-        Consume the package: entries are renamed into place when Source and Destination share a volume.
-        Used for packages received over the network, which are deleted after import anyway.
+        Consume the package: entries are renamed into place when Source and Destination share a volume,
+        then given the destination's inherited permissions. Used for packages received over the network.
     .PARAMETER SizeHint
         Bytes this folder holds; credited to Progress.BytesDone when the move needs no copy.
     .OUTPUTS
@@ -64,7 +83,7 @@ function Restore-PackageFolder {
     New-Item -Path $Destination -ItemType Directory -Force | Out-Null
 
     if ($Move -and (Test-SameVolume $Source $Destination)) {
-        Move-PackageTree -Source $Source -Destination $Destination
+        Reset-InheritedAcl -Paths (Move-PackageTree -Source $Source -Destination $Destination)
         $leftover = Get-ChildItem -LiteralPath $Source -Recurse -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $leftover) {
             if ($Progress) { $Progress['BytesDone'] = [long]$Progress['BytesDone'] + $SizeHint }

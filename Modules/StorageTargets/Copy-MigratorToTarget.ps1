@@ -18,7 +18,7 @@
 .SYNOPSIS
     Copies Win11Migrator to a target directory so it can run on the target machine.
 .DESCRIPTION
-    Uses Robocopy /MIR to copy the essential Win11Migrator files (scripts, config, modules, GUI,
+    Uses Robocopy /E to copy the essential Win11Migrator files (scripts, config, modules, GUI,
     reports) to a target base path. Excludes non-essential directories like MigrationPackage, Build,
     .git, and Tests. Skips the copy if the target already has the same or newer version.
 .PARAMETER TargetBasePath
@@ -51,11 +51,11 @@ function Copy-MigratorToTarget {
         New-Item -Path $TargetBasePath -ItemType Directory -Force -ErrorAction Stop | Out-Null
     }
 
-    # /MIR keeps the bundled tool exact; packages written next to it are protected by /XD Win11Migration_*
+    # /E, not /MIR: the target folder also holds packages and backups, and nothing there may be deleted
     $robocopyArgs = @(
         $script:MigratorRoot
         $TargetBasePath
-        '/MIR'
+        '/E'
         '/XD', 'MigrationPackage', 'Build', '.git', 'Tests', '.claude', '.github', 'node_modules', '.vscode', 'Logs', 'Win11Migration_*'
         '/XF', '*.log', '.gitignore', '.gitattributes', 'LICENSE', '*.md', '*.w11mcrypt'
         '/R:2'

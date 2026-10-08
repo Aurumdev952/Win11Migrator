@@ -169,6 +169,7 @@ function Get-WingetInstallableIds {
         Package IDs `winget export` can reinstall from a source, or $null when export is unavailable.
     #>
     $file = Join-Path ([System.IO.Path]::GetTempPath()) "w11m_winget_$([guid]::NewGuid().ToString('N')).json"
+    $ErrorActionPreference = 'Continue'
     try {
         & winget export -o $file --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
         if (-not (Test-Path $file)) { return $null }
