@@ -169,17 +169,19 @@ function New-CompletionReport {
 
     # Data stats
     $dataTotal   = $Manifest.UserData.Count
-    $dataSuccess = @($Manifest.UserData | Where-Object { $_.ExportStatus -eq 'Success' }).Count
-    $dataFailed  = @($Manifest.UserData | Where-Object { $_.ExportStatus -eq 'Failed' }).Count
-    $dataSkipped = @($Manifest.UserData | Where-Object { $_.ExportStatus -eq 'Skipped' -or -not $_.Selected }).Count
+    # The report describes the import, so its status wins; ExportStatus covers items never imported
+    $restoreStatus = { param($x) if ($x.ImportStatus) { $x.ImportStatus } else { $x.ExportStatus } }
+    $dataSuccess = @($Manifest.UserData | Where-Object { (& $restoreStatus $_) -eq 'Success' }).Count
+    $dataFailed  = @($Manifest.UserData | Where-Object { (& $restoreStatus $_) -eq 'Failed' }).Count
+    $dataSkipped = @($Manifest.UserData | Where-Object { (& $restoreStatus $_) -eq 'Skipped' -or -not $_.Selected }).Count
     $dataPending = $dataTotal - $dataSuccess - $dataFailed - $dataSkipped
     if ($dataPending -lt 0) { $dataPending = 0 }
 
     # Browser stats
     $browserTotal   = $Manifest.BrowserProfiles.Count
-    $browserSuccess = @($Manifest.BrowserProfiles | Where-Object { $_.ExportStatus -eq 'Success' }).Count
-    $browserFailed  = @($Manifest.BrowserProfiles | Where-Object { $_.ExportStatus -eq 'Failed' }).Count
-    $browserSkipped = @($Manifest.BrowserProfiles | Where-Object { $_.ExportStatus -eq 'Skipped' -or -not $_.Selected }).Count
+    $browserSuccess = @($Manifest.BrowserProfiles | Where-Object { (& $restoreStatus $_) -eq 'Success' }).Count
+    $browserFailed  = @($Manifest.BrowserProfiles | Where-Object { (& $restoreStatus $_) -eq 'Failed' }).Count
+    $browserSkipped = @($Manifest.BrowserProfiles | Where-Object { (& $restoreStatus $_) -eq 'Skipped' -or -not $_.Selected }).Count
     $browserPending = $browserTotal - $browserSuccess - $browserFailed - $browserSkipped
     if ($browserPending -lt 0) { $browserPending = 0 }
 
@@ -286,7 +288,7 @@ function New-CompletionReport {
         $i = 0
         foreach ($item in $Manifest.UserData) {
             $i++
-            $status = if ($item.ExportStatus) { $item.ExportStatus } else { 'Pending' }
+            $status = if (& $restoreStatus $item) { & $restoreStatus $item } else { 'Pending' }
             $badgeClass = Get-BadgeClass -Status $status
             $sizeMB = if ($item.SizeBytes -gt 0) {
                 "{0:N1} MB" -f ($item.SizeBytes / 1MB)
@@ -318,7 +320,7 @@ function New-CompletionReport {
         $i = 0
         foreach ($bp in $Manifest.BrowserProfiles) {
             $i++
-            $status = if ($bp.ExportStatus) { $bp.ExportStatus } else { 'Pending' }
+            $status = if (& $restoreStatus $bp) { & $restoreStatus $bp } else { 'Pending' }
             $badgeClass = Get-BadgeClass -Status $status
             $bookmarks  = if ($bp.HasBookmarks)  { 'Yes' } else { 'No' }
             $extCount   = if ($bp.Extensions) { $bp.Extensions.Count.ToString() } else { '0' }

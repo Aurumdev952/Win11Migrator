@@ -140,3 +140,13 @@ function Clear-LogQueue {
         $null = $script:LogQueue.TryDequeue([ref]$null)
     }
 }
+
+function Add-ProgressLog {
+    <#
+    .SYNOPSIS
+        Appends a line to a progress hashtable's Log (shown by the GUI) and echoes it for the CLI when Echo is set.
+    #>
+    param([hashtable]$Progress, [string]$Message)
+    if ($Progress -and $null -ne $Progress.Log) { $null = $Progress.Log.Add($Message) }
+    if ($Progress -and $Progress.Echo) { Write-Host $Message }
+}

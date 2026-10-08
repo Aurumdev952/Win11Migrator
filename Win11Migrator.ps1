@@ -69,6 +69,7 @@ param(
     [PSCredential]$TargetCredential,
     [string]$ComparePath,
     [switch]$Resume,
+    [switch]$MoveFromPackage,
     [switch]$CheckForUpdates
 )
 
@@ -98,6 +99,7 @@ if ($CheckForUpdates) {
 . "$script:MigratorRoot\Core\Invoke-Robocopy.ps1"
 . "$script:MigratorRoot\Core\Get-MigrationExclusions.ps1"
 . "$script:MigratorRoot\Core\Invoke-MigrationExport.ps1"
+. "$script:MigratorRoot\Core\Invoke-MigrationImport.ps1"
 
 # --- Load App Discovery ---
 Get-ChildItem "$script:MigratorRoot\Modules\AppDiscovery\*.ps1" | ForEach-Object { . $_.FullName }
@@ -643,141 +645,41 @@ if ($CLI) {
             Write-Host "  Apps: $($manifest.Apps.Count) | UserData: $($manifest.UserData.Count) | Browsers: $($manifest.BrowserProfiles.Count)" -ForegroundColor Cyan
             Write-Host ""
 
-            # Phase 1: Install apps
-            Write-Host "[1/6] Installing applications..." -ForegroundColor Yellow
-            $appsToInstall = @($manifest.Apps | Where-Object { $_.Selected -and $_.InstallMethod -and $_.InstallMethod -ne 'Manual' })
-            if ($appsToInstall.Count -gt 0) {
-                $installedApps = Invoke-AppInstallPipeline -Apps $appsToInstall -Config $script:Config
-                $succeeded = @($installedApps | Where-Object { $_.InstallStatus -eq 'Success' }).Count
-                $failedApps = @($installedApps | Where-Object { $_.InstallStatus -eq 'Failed' }).Count
-                Write-Host "  Installed: $succeeded succeeded, $failedApps failed" -ForegroundColor Green
-            } else {
-                Write-Host "  No auto-install applications" -ForegroundColor DarkGray
-            }
+            $progress = [hashtable]::Synchronized(@{
+                Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+                Echo = -not $Silent
+            })
+            $result = Invoke-MigrationImport -PackagePath $PackagePath -Manifest $manifest -Progress $progress -MoveFromPackage:$MoveFromPackage
+            foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
-            # Phase 2: Restore user data
-            Write-Host "[2/6] Restoring user data..." -ForegroundColor Yellow
-            $dataDir = Join-Path $PackagePath "UserData"
-            if (Test-Path $dataDir) {
-                try {
-                    $restoredData = Import-UserProfile -Items $manifest.UserData -PackagePath $dataDir
-                    $dataSuccess = @($restoredData | Where-Object { $_.ExportStatus -eq 'Success' }).Count
-                    Write-Host "  Restored $dataSuccess user data items" -ForegroundColor Green
-                } catch {
-                    Write-Host "  WARNING: $($_.Exception.Message)" -ForegroundColor Yellow
-                }
-            }
-
-            # Phase 3: Restore browsers
-            Write-Host "[3/6] Restoring browser profiles..." -ForegroundColor Yellow
-            $browserDir = Join-Path $PackagePath "BrowserProfiles"
-            if (Test-Path $browserDir) {
-                foreach ($profile in ($manifest.BrowserProfiles | Where-Object { $_.Selected })) {
-                    $profileDir = Join-Path $browserDir "$($profile.Browser)_$($profile.ProfileName)"
-                    if (Test-Path $profileDir) {
-                        try {
-                            switch ($profile.Browser) {
-                                'Chrome'  { Import-ChromeProfile -Profile $profile -PackagePath $profileDir }
-                                'Edge'    { Import-EdgeProfile -Profile $profile -PackagePath $profileDir }
-                                'Firefox' { Import-FirefoxProfile -Profile $profile -PackagePath $profileDir }
-                                'Brave'   { Import-BraveProfile -Profile $profile -PackagePath $profileDir }
-                            }
-                            Write-Host "    Restored: $($profile.Browser) - $($profile.ProfileName)" -ForegroundColor DarkGray
-                        } catch {
-                            Write-Host "    FAILED: $($profile.Browser): $($_.Exception.Message)" -ForegroundColor Yellow
-                        }
-                    }
-                }
-            }
-
-            # Phase 4: Restore system settings
-            Write-Host "[4/6] Restoring system settings..." -ForegroundColor Yellow
-            $settingsDir = Join-Path $PackagePath "SystemSettings"
-            if (Test-Path $settingsDir) {
-                $wifiSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'WiFi' }
-                if ($wifiSettings) { try { Import-WiFiProfiles -PackagePath (Join-Path $settingsDir "WiFi") -Settings $wifiSettings } catch { Write-Host "    WiFi: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $printerSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Printer' }
-                if ($printerSettings) { try { Import-PrinterConfigs -Settings $printerSettings } catch { Write-Host "    Printers: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $driveSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'MappedDrive' }
-                if ($driveSettings) { try { Import-MappedDrives -Settings $driveSettings } catch { Write-Host "    Drives: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $envSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'EnvVar' }
-                if ($envSettings) { try { Import-EnvironmentVariables -Settings $envSettings } catch { Write-Host "    EnvVars: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $winSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'WindowsSetting' }
-                if ($winSettings) { try { Import-WindowsSettings -PackagePath (Join-Path $settingsDir "WindowsSettings") -Settings $winSettings } catch { Write-Host "    WinSettings: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $accessSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Accessibility' }
-                if ($accessSettings) { try { Import-AccessibilitySettings -PackagePath (Join-Path $settingsDir "Accessibility") -Settings $accessSettings } catch { Write-Host "    Accessibility: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $regionalSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Regional' }
-                if ($regionalSettings) { try { Import-RegionalSettings -PackagePath (Join-Path $settingsDir "Regional") -Settings $regionalSettings } catch { Write-Host "    Regional: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $vpnSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'VPN' }
-                if ($vpnSettings) { try { Import-VPNConnections -PackagePath (Join-Path $settingsDir "VPN") -Settings $vpnSettings } catch { Write-Host "    VPN: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $certSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'Certificate' }
-                if ($certSettings) { try { Import-UserCertificates -PackagePath (Join-Path $settingsDir "Certificates") -Settings $certSettings } catch { Write-Host "    Certificates: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $odbcSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'ODBC' }
-                if ($odbcSettings) { try { Import-ODBCSettings -PackagePath (Join-Path $settingsDir "ODBC") -Settings $odbcSettings } catch { Write-Host "    ODBC: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $folderSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'FolderOption' }
-                if ($folderSettings) { try { Import-FolderOptions -PackagePath (Join-Path $settingsDir "FolderOptions") -Settings $folderSettings } catch { Write-Host "    FolderOptions: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $inputSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'InputSetting' }
-                if ($inputSettings) { try { Import-InputSettings -PackagePath (Join-Path $settingsDir "InputSettings") -Settings $inputSettings } catch { Write-Host "    InputSettings: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                $powerSettings = $manifest.SystemSettings | Where-Object { $_.Category -eq 'PowerPlan' }
-                if ($powerSettings) { try { Import-PowerSettings -PackagePath (Join-Path $settingsDir "PowerPlan") -Settings $powerSettings } catch { Write-Host "    PowerPlan: $($_.Exception.Message)" -ForegroundColor Yellow } }
-                Write-Host "  System settings restored" -ForegroundColor Green
-            }
-
-            # Phase 5: Restore AppData + App Profiles
-            Write-Host "[5/6] Restoring AppData and application profiles..." -ForegroundColor Yellow
-            $appDataDir = Join-Path $PackagePath "AppData"
-            if (Test-Path $appDataDir) {
-                $appDataItems = @($manifest.UserData | Where-Object { $_.Category -eq 'AppData' })
-                if ($appDataItems.Count -gt 0) {
-                    try { Import-AppDataSettings -Items $appDataItems -PackagePath $PackagePath; Write-Host "  AppData restored" -ForegroundColor Green } catch { Write-Host "  AppData: $($_.Exception.Message)" -ForegroundColor Yellow }
-                }
-            }
-            $profilesDir = Join-Path $PackagePath "AppProfiles"
-            if ((Test-Path $profilesDir) -and $manifest.AppProfiles.Count -gt 0) {
-                try {
-                    $imported = Import-AppProfiles -SourcePath $profilesDir -Profiles $manifest.AppProfiles
-                    Write-Host "  Restored $imported application profiles" -ForegroundColor Green
-                } catch { Write-Host "  AppProfiles: $($_.Exception.Message)" -ForegroundColor Yellow }
-            }
-
-            # Phase 6: Reports
-            Write-Host "[6/6] Generating reports..." -ForegroundColor Yellow
-            $reportDir = Join-Path $PackagePath "Reports"
-            New-Item -Path $reportDir -ItemType Directory -Force | Out-Null
             try {
-                $manualApps = $manifest.Apps | Where-Object { $_.InstallMethod -eq 'Manual' -or $_.InstallStatus -eq 'Failed' }
-                if ($manualApps) { New-ManualInstallReport -Apps $manualApps -OutputDirectory $reportDir | Out-Null }
-                New-CompletionReport -Manifest $manifest -OutputDirectory $reportDir | Out-Null
-                Write-Host "  Reports generated in $reportDir" -ForegroundColor Green
-            } catch { Write-Host "  Reports: $($_.Exception.Message)" -ForegroundColor Yellow }
-
-            # Write progress file for external monitoring
-            @{
-                phase       = 'complete'
-                percent     = 100
-                currentItem = ''
-                succeeded   = $succeeded
-                failed      = $failedApps
-                errors      = @()
-                timestamp   = (Get-Date).ToString('o')
-            } | ConvertTo-Json | Set-Content (Join-Path $PackagePath "progress.json") -Encoding UTF8
+                @{
+                    phase     = 'complete'
+                    percent   = 100
+                    succeeded = $result.Succeeded
+                    failed    = $result.Failed
+                    errors    = $result.Errors
+                    timestamp = (Get-Date).ToString('o')
+                } | ConvertTo-Json | Set-Content (Join-Path $result.WorkPath "progress.json") -Encoding UTF8
+            } catch {}
 
             if (-not $Silent) {
                 Write-Host ""
-                Write-Host "  Import complete!" -ForegroundColor Green
+                Write-Host "  Import complete: $($result.Succeeded) restored, $($result.Failed) failed" -ForegroundColor Green
+                if ($result.CompletionReportPath) { Write-Host "  Report: $($result.CompletionReportPath)" -ForegroundColor Cyan }
             }
             Write-MigrationLog -Message "CLI import completed from $PackagePath" -Level Success
 
-            # Silent mode: write structured result and exit with appropriate code
             if ($Silent) {
-                $exitCode = if ($failedApps -gt 0) { 1 } else { 0 }  # 1=partial, 0=success
+                $exitCode = if ($result.Failed -gt 0) { 1 } else { 0 }  # 1=partial, 0=success
                 @{
-                    success    = ($failedApps -eq 0)
-                    action     = 'import'
-                    succeeded  = $succeeded
-                    failed     = $failedApps
-                    timestamp  = (Get-Date).ToString('o')
-                } | ConvertTo-Json | Set-Content (Join-Path $PackagePath "migration-result.json") -Encoding UTF8
+                    success   = ($result.Failed -eq 0)
+                    action    = 'import'
+                    succeeded = $result.Succeeded
+                    failed    = $result.Failed
+                    errors    = $result.Errors
+                    timestamp = (Get-Date).ToString('o')
+                } | ConvertTo-Json | Set-Content (Join-Path $result.WorkPath "migration-result.json") -Encoding UTF8
                 exit $exitCode
             }
         }

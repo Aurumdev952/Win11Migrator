@@ -25,112 +25,73 @@
 .PARAMETER PackagePath
     Root path of the migration package.
 .OUTPUTS
-    [UserDataItem[]] Updated items with ExportStatus reflecting import result.
+    The same items with ImportStatus set.
 #>
 
 function Import-AppDataSettings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [UserDataItem[]]$Items,
+        [AllowEmptyCollection()]
+        [object[]]$Items,
 
         [Parameter(Mandatory)]
-        [string]$PackagePath
+        [string]$PackagePath,
+
+        [switch]$MoveFromPackage,
+
+        [hashtable]$Progress
     )
 
     Write-MigrationLog -Message "Beginning AppData settings import from $PackagePath" -Level Info
 
-    # Robocopy settings
-    $retries = if ($script:Config -and $script:Config['RobocopyRetries'])     { $script:Config['RobocopyRetries'] }     else { 3 }
-    $waitSec = if ($script:Config -and $script:Config['RobocopyWaitSeconds']) { $script:Config['RobocopyWaitSeconds'] } else { 5 }
-    $threads = if ($script:Config -and $script:Config['RobocopyThreads'])     { $script:Config['RobocopyThreads'] }     else { 8 }
-
-    # Map label to environment paths on this machine
     $rootMap = @{
         'Roaming' = $env:APPDATA
         'Local'   = $env:LOCALAPPDATA
     }
 
-    $appDataItems = $Items | Where-Object { $_.Category -eq 'AppData' -and $_.Selected }
-    $totalCount = @($appDataItems).Count
-    $currentIndex = 0
-
-    Write-MigrationLog -Message "Importing $totalCount AppData items" -Level Info
-
     foreach ($item in $Items) {
-        if ($item.Category -ne 'AppData' -or -not $item.Selected) {
-            if ($item.Category -eq 'AppData' -and -not $item.Selected) {
-                $item.ExportStatus = 'Skipped'
-            }
+        if ($item.Category -ne 'AppData') { continue }
+        if (-not $item.Selected -or $item.ExportStatus -eq 'Failed') {
+            $item.ImportStatus = 'Skipped'
             continue
         }
 
-        $currentIndex++
-        Write-MigrationLog -Message "Importing AppData [$currentIndex/$totalCount]: $($item.RelativePath)" -Level Info
+        # RelativePath is AppData\<Roaming|Local>\<folder>, relative to the package root.
+        # Packages from 1.0.x nested it one level deeper, under AppData\.
+        $packageSourcePath = @(
+            (Join-Path $PackagePath $item.RelativePath),
+            (Join-Path (Join-Path $PackagePath 'AppData') $item.RelativePath)
+        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
-        # Locate the source inside the migration package
-        $packageSourcePath = Join-Path $PackagePath "UserData\$($item.RelativePath)"
-
-        if (-not (Test-Path $packageSourcePath)) {
-            $item.ExportStatus = 'Failed'
-            Write-MigrationLog -Message "Package source not found: $packageSourcePath" -Level Warning
+        if (-not $packageSourcePath) {
+            $item.ImportStatus = 'Failed'
+            Write-MigrationLog -Message "Package source not found for AppData item $($item.RelativePath)" -Level Warning
             continue
         }
 
-        # Determine target path from the RelativePath structure: AppData\<Roaming|Local>\<subfolder>
-        # RelativePath format: AppData\Roaming\Microsoft\Sticky Notes  or  AppData\Local\...
-        $targetPath = $null
-        try {
-            $pathParts = $item.RelativePath -split '\\', 3
-            # pathParts[0] = 'AppData', pathParts[1] = 'Roaming'|'Local', pathParts[2] = relative sub-folder
-            if ($pathParts.Count -ge 3 -and $rootMap.ContainsKey($pathParts[1])) {
-                $targetPath = Join-Path $rootMap[$pathParts[1]] $pathParts[2]
-            }
-            else {
-                # Fall back: try to reconstruct from the original SourcePath concept
-                Write-MigrationLog -Message "Unable to parse AppData relative path: $($item.RelativePath). Attempting source path fallback." -Level Warning
-                $targetPath = $item.SourcePath
-            }
-        }
-        catch {
-            $item.ExportStatus = 'Failed'
-            Write-MigrationLog -Message "Failed to determine target path for $($item.RelativePath): $($_.Exception.Message)" -Level Error
+        $pathParts = $item.RelativePath -split '[\\/]', 3
+        if ($pathParts.Count -lt 3 -or -not $rootMap[$pathParts[1]]) {
+            $item.ImportStatus = 'Failed'
+            Write-MigrationLog -Message "Unrecognised AppData path in manifest: $($item.RelativePath)" -Level Warning
             continue
         }
-
-        if (-not $targetPath) {
-            $item.ExportStatus = 'Failed'
-            Write-MigrationLog -Message "Could not resolve target path for $($item.RelativePath)" -Level Error
-            continue
-        }
+        $targetPath = Join-Path $rootMap[$pathParts[1]] $pathParts[2]
+        if ($Progress) { $Progress['Item'] = $item.RelativePath }
 
         try {
-            if (-not (Test-Path $targetPath)) {
-                New-Item -Path $targetPath -ItemType Directory -Force | Out-Null
-            }
-
-            # Use /E (not /MIR) to avoid deleting existing settings on the target
-            $robocopyOutput = & robocopy $packageSourcePath $targetPath /E /R:$retries /W:$waitSec /MT:$threads /NP /NDL /NJH /NJS 2>&1
-            $exitCode = $LASTEXITCODE
-
-            if ($exitCode -lt 8) {
-                $item.ExportStatus = 'Success'
-                Write-MigrationLog -Message "AppData import successful: $($item.RelativePath) -> $targetPath" -Level Success
-            }
-            else {
-                $item.ExportStatus = 'Failed'
-                $errorLines = ($robocopyOutput | Select-Object -Last 5) -join '; '
-                Write-MigrationLog -Message "AppData import failed for $($item.RelativePath), exit code $exitCode. $errorLines" -Level Error
-            }
-        }
-        catch {
-            $item.ExportStatus = 'Failed'
+            $restore = Restore-PackageFolder -Source $packageSourcePath -Destination $targetPath -Move:$MoveFromPackage `
+                -Progress $Progress -SizeHint ([long]$item.SizeBytes)
+            $item.ImportStatus = if ($restore.Success) { 'Success' } else { 'Failed' }
+        } catch {
+            $item.ImportStatus = 'Failed'
             Write-MigrationLog -Message "Exception importing AppData $($item.RelativePath): $($_.Exception.Message)" -Level Error
         }
     }
 
-    $successCount = @($Items | Where-Object { $_.Category -eq 'AppData' -and $_.ExportStatus -eq 'Success' }).Count
-    $failCount    = @($Items | Where-Object { $_.Category -eq 'AppData' -and $_.ExportStatus -eq 'Failed' }).Count
+    $appData = @($Items | Where-Object { $_.Category -eq 'AppData' })
+    $successCount = @($appData | Where-Object { $_.ImportStatus -eq 'Success' }).Count
+    $failCount    = @($appData | Where-Object { $_.ImportStatus -eq 'Failed' }).Count
     Write-MigrationLog -Message "AppData import complete. Success: $successCount, Failed: $failCount" -Level Info
 
     return $Items
