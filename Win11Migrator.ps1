@@ -980,6 +980,7 @@ if ($CLI) {
             Write-Host "  scan        - Scan this PC and report all discoverable items" -ForegroundColor White
             Write-Host "  export      - Export a full migration package" -ForegroundColor White
             Write-Host "  import      - Import/restore from a migration package" -ForegroundColor White
+            Write-Host "  receive     - Wait for another PC on the network to send its package, then restore it" -ForegroundColor White
             Write-Host "  validate    - Validate a migration package integrity" -ForegroundColor White
             Write-Host "  status      - Show migration status from registry" -ForegroundColor White
             Write-Host "  diff        - Compare two migration packages" -ForegroundColor White

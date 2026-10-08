@@ -2,15 +2,10 @@
 
 ## Quick Install
 
-1. Download the latest release ZIP from [Releases](https://github.com/AuthorityGate/Win11Migrator/releases) or clone the repository:
+1. Download the latest `Win11Migrator-<version>-x64.msi` from [Releases](https://github.com/Aurumdev952/Win11Migrator/releases) and run it. Or use the portable `.exe`, or extract the portable `.zip`.
+2. Start **Win11Migrator** from the Start menu (zip: double-click `Win11Migrator.bat`).
 
-   ```
-   git clone https://github.com/AuthorityGate/Win11Migrator.git
-   ```
-
-2. Double-click `Win11Migrator.bat` to launch.
-
-That's it. No build step, no dependencies to install. The tool runs directly from the folder.
+Builds are not code-signed yet, so SmartScreen may ask for confirmation; see "Windows SmartScreen and Microsoft Defender" in the README.
 
 ---
 
@@ -20,14 +15,14 @@ That's it. No build step, no dependencies to install. The tool runs directly fro
 
 **Option A: Download ZIP**
 
-1. Go to https://github.com/AuthorityGate/Win11Migrator
+1. Go to https://github.com/Aurumdev952/Win11Migrator
 2. Click **Code** > **Download ZIP**
 3. Extract the ZIP to any location (e.g. `C:\Win11Migrator`)
 
 **Option B: Git Clone**
 
 ```powershell
-git clone https://github.com/AuthorityGate/Win11Migrator.git
+git clone https://github.com/Aurumdev952/Win11Migrator.git
 cd Win11Migrator
 ```
 
@@ -36,10 +31,10 @@ cd Win11Migrator
 If you received the source and want to create a distributable package:
 
 ```powershell
-.\Build.ps1
+.\build\Build-Release.ps1 -SkipMsi
 ```
 
-This creates `Build\Win11Migrator_v<version>.zip`, using the version in `Config\AppSettings.json`. Extract that ZIP on any target machine.
+This creates the portable `.zip` and `.exe` in `dist\`, using the version in `Config\AppSettings.json`. Building the MSI as well needs the WiX CLI: `dotnet tool install --global wix --version 5.0.2`.
 
 ### Step 2: Verify Prerequisites
 

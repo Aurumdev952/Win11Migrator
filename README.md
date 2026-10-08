@@ -36,7 +36,7 @@ Win11Migrator scans a source machine for installed applications, user data, brow
 | **Privileges** | Administrator recommended. Required on the target machine for app installation. |
 | **Disk Space** | Enough free space on the transfer medium to hold the migration package |
 
-Win11Migrator checks the official AuthorityGate release channel at startup, no more than once every 24 hours. When a newer version is available, it downloads the installer and requires a valid, timestamped **AUTHORITYGATE INC** Authenticode signature before offering to launch it. Run `Win11Migrator.ps1 -CheckForUpdates` for an immediate manual check.
+Win11Migrator checks the releases of the repository named by `UpdateRepository` in `Config\AppSettings.json` (`Aurumdev952/Win11Migrator`) at startup, no more than once every 24 hours. Before installing an update it verifies the download: against `UpdateSignerSubject` when that is set (signed builds), otherwise against the SHA-256 in the release's `SHA256SUMS.txt`. Run `Win11Migrator.ps1 -CheckForUpdates` for an immediate check.
 
 Optional tools that enhance functionality (detected automatically at runtime):
 
@@ -44,20 +44,43 @@ Optional tools that enhance functionality (detected automatically at runtime):
 |---|---|
 | [WinGet](https://github.com/microsoft/winget-cli) | Primary app install method (pre-installed on Windows 11 22H2+) |
 | [Chocolatey](https://chocolatey.org/) | Secondary app install method (auto-bootstrapped on target if needed) |
-| [7-Zip](https://www.7-zip.org/) | Only needed if you want to build a self-extracting EXE via `Build.ps1 -CreateSFX` |
 
 ---
 
 ## Getting Started
 
+Download from the [Releases page](https://github.com/Aurumdev952/Win11Migrator/releases). Each release has three forms of the same app:
+
+| File | Use it when |
+|---|---|
+| `Win11Migrator-<version>-x64.msi` | Installing on a PC, or deploying with Intune, SCCM or Group Policy. Installs to `Program Files\Aurumdev952\Win11Migrator` with Start menu and desktop shortcuts, upgrades in place, and uninstalls from Settings > Apps. Silent: `msiexec /i Win11Migrator-<version>-x64.msi /qn`. |
+| `Win11Migrator-<version>-portable.exe` | Running once without installing, e.g. from a USB stick. It unpacks to `%LOCALAPPDATA%\Win11Migrator\portable\<version>` on first run. |
+| `Win11Migrator-<version>-portable.zip` | Environments that block downloaded executables. Extract and double-click `Win11Migrator.bat`. |
+| `SHA256SUMS.txt` | Checking a download: `Get-FileHash <file> -Algorithm SHA256` must match. |
+
 ### Option 1: Double-click (recommended for non-technical users)
 
-1. Download or copy the `Win11Migrator` folder to your PC.
-2. Double-click **`Win11Migrator.bat`**.
+1. Install the MSI (or extract the zip, or run the portable exe).
+2. Start **Win11Migrator** from the Start menu (or double-click `Win11Migrator.bat`).
 3. Accept the UAC elevation prompt.
 4. The wizard GUI opens automatically.
 
-The `.bat` launcher checks for admin rights, requests elevation if needed, sets the execution policy for the session, and launches the PowerShell script.
+The `.bat` launcher requests elevation and runs the script with `-ExecutionPolicy Bypass` for that one process. It does not change system policy or any security setting.
+
+### Windows SmartScreen and Microsoft Defender
+
+Release builds are currently **unsigned**. On a PC that downloads one, SmartScreen may say "Windows protected your PC". Choose **More info > Run anyway**, after checking the file against `SHA256SUMS.txt` from the same release. The zip and the MSI rarely trigger this; the portable exe is the most likely to.
+
+Versions before 1.1.0 changed security settings from `Win11Migrator.bat`: they turned off Defender real-time protection, excluded all PowerShell scripts and `powershell.exe` from scanning, set the machine execution policy to Bypass, and disabled AMSI for the session. That behaviour is gone, and it was the main reason antivirus flagged the tool. On PCs that ran an older version, run this as administrator to undo it:
+
+```powershell
+.\Tools\Remove-LegacyDefenderChanges.ps1 -WhatIf               # show what would change
+.\Tools\Remove-LegacyDefenderChanges.ps1 -ResetExecutionPolicy # undo it
+```
+
+If Defender still flags a release, submit the file as a false positive at the [Microsoft Security Intelligence portal](https://www.microsoft.com/en-us/wdsi/filesubmission).
+
+To have releases signed, add two repository secrets: `WIN11MIGRATOR_SIGN_PFX` (the base64 of a code-signing `.pfx`) and `WIN11MIGRATOR_SIGN_PASSWORD`. The build then signs every script, the portable exe and the MSI with a timestamp. Also set `UpdateSignerSubject` in `AppSettings.json` to the certificate's subject (for example `CN=Your Org`), so the updater requires that signature. Certificates whose key lives in a cloud HSM (SSL.com eSigner, DigiCert KeyLocker, Azure Key Vault) need their vendor's signing step in place of the pfx. Signing does not remove SmartScreen warnings straight away: Microsoft builds reputation for a new publisher over a few weeks of clean downloads.
 
 ### Option 2: PowerShell
 
@@ -370,32 +393,24 @@ The manifest is the authoritative record of the migration. Structure:
 
 ## Building from Source
 
-The build script packages all project files into a distributable ZIP:
+On Windows with the WiX Toolset CLI installed (`dotnet tool install --global wix --version 5.0.2`):
 
 ```powershell
-# Basic ZIP build
-.\Build.ps1
-
-# Custom version
-.\Build.ps1 -Version "1.2.0"
-
-# Custom output directory
-.\Build.ps1 -OutputPath "C:\Releases"
-
-# ZIP + self-extracting EXE (requires 7-Zip installed)
-.\Build.ps1 -CreateSFX
+.\build\Build-Release.ps1            # MSI, portable exe, portable zip and SHA256SUMS.txt in .\dist
+.\build\Build-Release.ps1 -SkipMsi   # portable artifacts only, no WiX needed
 ```
 
-Build output is placed in `.\Build\` by default:
+The version comes from `Version` in `Config\AppSettings.json` and must be `major.minor.patch`.
 
-```
-Build/
-    Win11Migrator_v1.0.0/     # Staging directory
-    Win11Migrator_v1.0.0.zip  # Distributable ZIP
-    Win11Migrator_v1.0.0.exe  # Self-extracting EXE (if -CreateSFX)
-```
+### Continuous integration and releases
 
-The ZIP contains everything needed to run on any Windows 11 machine with no prerequisites beyond PowerShell 5.1.
+`.github/workflows/ci.yml` runs on every push and pull request. It runs the linter and the Pester suite on Windows PowerShell 5.1, builds all artifacts, and smoke-tests them: it installs and uninstalls the MSI, runs the zip, and launches the portable exe. The artifacts are attached to the workflow run.
+
+To publish a release:
+
+1. Set `Version` in `Config\AppSettings.json` (for example `1.2.0`) and merge to `main`.
+2. Tag that commit and push the tag: `git tag v1.2.0 && git push origin v1.2.0`.
+3. The workflow checks that the tag matches the version, builds, and creates the GitHub release with all files attached.
 
 ---
 
@@ -439,7 +454,14 @@ GitHub Actions (`.github/workflows/test.yml`) runs the linter and the full suite
 Win11Migrator/
     Win11Migrator.ps1              # Entry point: loads all modules, initializes environment, launches GUI
     Win11Migrator.bat              # Double-click launcher: handles UAC elevation and execution policy
-    Build.ps1                      # Packaging script: ZIP and optional SFX EXE
+    build/
+        Build-Release.ps1          # Builds the MSI, portable exe, portable zip and checksums
+        PortableLauncher.cs        # Source of the portable exe
+    Tools/
+        Remove-LegacyDefenderChanges.ps1  # Undo the security changes made by launchers before 1.1.0
+    .github/workflows/
+        ci.yml                     # Test, build, smoke-test, and release on v* tags
+        test.yml                   # Lint and Pester (reused by ci.yml)
     README.md
     LICENSE
 
