@@ -59,7 +59,7 @@ Describe "Integration Tests" -Tag "Windows" {
             $paths.Count | Should -BeGreaterThan 0
         }
 
-        It "Should detect browser profiles" {
+        It "Should detect browser profiles" -Skip:(-not (Test-Path "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default") -and -not (Test-Path "$env:LOCALAPPDATA\Google\Chrome\User Data\Default")) {
             $profiles = Get-BrowserProfilePaths
             # At minimum Edge should be present on Win11
             $profiles.Count | Should -BeGreaterOrEqual 1
@@ -135,7 +135,7 @@ Describe "Integration Tests" -Tag "Windows" {
                 $app.InstallMethod = "Manual"
                 $app.InstallStatus = "Pending"
 
-                $reportPath = New-ManualInstallReport -Apps @($app) -OutputPath $tempDir
+                $reportPath = New-ManualInstallReport -Apps @($app) -OutputDirectory $tempDir
                 Test-Path $reportPath | Should -Be $true
 
                 $html = Get-Content $reportPath -Raw
