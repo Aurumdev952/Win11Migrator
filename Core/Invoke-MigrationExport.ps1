@@ -132,12 +132,6 @@ function Resolve-UniqueRelativePath {
     }
 }
 
-function Add-ExportLog {
-    param([hashtable]$Progress, [string]$Message)
-    if ($Progress -and $Progress.Log) { $null = $Progress.Log.Add($Message) }
-    if ($Progress -and $Progress.Echo) { Write-Host $Message }
-}
-
 function Invoke-MigrationExport {
     <#
     .SYNOPSIS
@@ -194,7 +188,7 @@ function Invoke-MigrationExport {
         param([string]$Phase, [int]$Percent)
         $Progress['Phase'] = $Phase
         $Progress['Percent'] = $Percent
-        Add-ExportLog $Progress "[$Phase]"
+        Add-ProgressLog $Progress "[$Phase]"
         & $reportStatus
     }
     $writeManifest = {
@@ -221,7 +215,7 @@ function Invoke-MigrationExport {
             foreach ($failed in @($toCopy | Where-Object { $_.ExportStatus -eq 'Failed' })) {
                 $errors.Add("UserData: $($failed.Category) failed to copy")
             }
-            Add-ExportLog $Progress "  Copied $(@($toCopy | Where-Object { $_.ExportStatus -eq 'Success' }).Count) of $($toCopy.Count) folders"
+            Add-ProgressLog $Progress "  Copied $(@($toCopy | Where-Object { $_.ExportStatus -eq 'Success' }).Count) of $($toCopy.Count) folders"
         } catch {
             $errors.Add("UserData: $($_.Exception.Message)")
         }
@@ -254,7 +248,7 @@ function Invoke-MigrationExport {
             $result = & $exp.Func -ExportPath (Join-Path $settingsDir $exp.Sub)
             if ($result) { $settings += $result }
         } catch {
-            Add-ExportLog $Progress "  [WARN] $($exp.Label): $($_.Exception.Message)"
+            Add-ProgressLog $Progress "  [WARN] $($exp.Label): $($_.Exception.Message)"
         }
     }
 
@@ -269,10 +263,10 @@ function Invoke-MigrationExport {
                 $usmtResult = Invoke-USMTScanState -ScanStatePath $usmt.ScanStatePath -StorePath $usmtStore `
                     -MigrationXmls $usmtXmls -LogPath (Join-Path $PackagePath 'usmt_scanstate.log')
                 $usmtPresent = [bool]$usmtResult.Success
-                if (-not $usmtResult.Success) { Add-ExportLog $Progress "  [WARN] USMT exit code $($usmtResult.ExitCode): $($usmtResult.ErrorMessage)" }
+                if (-not $usmtResult.Success) { Add-ProgressLog $Progress "  [WARN] USMT exit code $($usmtResult.ExitCode): $($usmtResult.ErrorMessage)" }
             }
         } catch {
-            Add-ExportLog $Progress "  [WARN] USMT: $($_.Exception.Message)"
+            Add-ProgressLog $Progress "  [WARN] USMT: $($_.Exception.Message)"
         }
     }
 
@@ -331,7 +325,7 @@ function Invoke-MigrationExportToDestination {
     $packagePath = $null
     if ($Resume -and -not $EncryptPassword) {
         $packagePath = Find-ResumablePackage -Root $Destination.Root
-        if ($packagePath) { Add-ExportLog $Progress "Resuming unfinished package $packagePath" }
+        if ($packagePath) { Add-ProgressLog $Progress "Resuming unfinished package $packagePath" }
     }
     if (-not $packagePath) {
         $name = New-MigrationPackageName

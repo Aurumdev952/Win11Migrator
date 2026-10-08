@@ -76,7 +76,7 @@ function New-RollbackSnapshot {
                     $safeName = ($dataPath -replace '[\\/:*?"<>|]', '_').TrimStart('_')
                     $fingerprintFile = Join-Path $dataSnapshotDir "$safeName.json"
 
-                    $fingerprint = Get-PackageFingerprint -Path $dataPath -OutputFile $fingerprintFile
+                    $fingerprint = Get-PackageFingerprint -Path $dataPath -OutputFile $fingerprintFile -Algorithm None
                     $dataPathCount++
                     Write-MigrationLog -Message "Snapshot: fingerprinted $dataPath ($($fingerprint.TotalFiles) files)" -Level Debug
                 }

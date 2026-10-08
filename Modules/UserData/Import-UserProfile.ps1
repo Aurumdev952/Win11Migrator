@@ -27,141 +27,103 @@
 .PARAMETER TargetProfilePaths
     Optional hashtable from Get-UserProfilePaths on the target machine. If not
     provided, the function will call Get-UserProfilePaths automatically.
+.PARAMETER MoveFromPackage
+    Rename package folders into place instead of copying them (same volume only).
 .OUTPUTS
-    [UserDataItem[]] Updated items with ExportStatus reflecting import result.
+    [UserDataItem[]] The same items with ImportStatus set.
 #>
+
+function Get-UserDataRestoreTarget {
+    <#
+    .SYNOPSIS
+        Where an exported folder belongs on this PC: the known folder for standard categories
+        (which honours OneDrive redirection), otherwise %USERPROFILE%\<RelativePath>.
+    #>
+    param([Parameter(Mandatory)]$Item, [Parameter(Mandatory)][hashtable]$TargetProfilePaths)
+    if ($Item.Category -and $Item.Category -ne 'Custom' -and $TargetProfilePaths.ContainsKey($Item.Category)) {
+        return $TargetProfilePaths[$Item.Category]
+    }
+    $relative = if ($Item.RelativePath) { $Item.RelativePath } else { $Item.Category }
+    return Join-Path $env:USERPROFILE $relative
+}
 
 function Import-UserProfile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [UserDataItem[]]$Items,
+        [AllowEmptyCollection()]
+        [object[]]$Items,
 
         [Parameter(Mandatory)]
         [string]$PackagePath,
 
         [hashtable]$TargetProfilePaths,
 
+        [switch]$MoveFromPackage,
+
+        [hashtable]$Progress,
+
         [switch]$PreserveACLs
     )
 
     Write-MigrationLog -Message "Beginning user profile import from $PackagePath" -Level Info
 
-    # Resolve target profile paths if not supplied
     if (-not $TargetProfilePaths) {
         $TargetProfilePaths = Get-UserProfilePaths
     }
-
-    # Robocopy settings
-    $threads  = if ($script:Config -and $script:Config['RobocopyThreads'])      { $script:Config['RobocopyThreads'] }      else { 8 }
-    $retries  = if ($script:Config -and $script:Config['RobocopyRetries'])       { $script:Config['RobocopyRetries'] }      else { 3 }
-    $waitSec  = if ($script:Config -and $script:Config['RobocopyWaitSeconds'])   { $script:Config['RobocopyWaitSeconds'] }  else { 5 }
-
-    $excludePatterns = @('*.tmp', '~$*', 'Thumbs.db', 'desktop.ini')
-    if ($script:Config -and $script:Config['ExcludeFilePatterns']) {
-        $excludePatterns = @()
-        foreach ($p in $script:Config['ExcludeFilePatterns']) {
-            $excludePatterns += $p.ToString()
-        }
-    }
-
-    $selectedItems = $Items | Where-Object { $_.Selected }
-    $totalCount = @($selectedItems).Count
-    $currentIndex = 0
-
-    Write-MigrationLog -Message "Importing $totalCount user data items" -Level Info
+    $dataRoot = Join-Path $PackagePath 'UserData'
 
     foreach ($item in $Items) {
-        if (-not $item.Selected) {
-            $item.ExportStatus = 'Skipped'
+        if ($item.Category -eq 'AppData') { continue }
+        if (-not $item.Selected -or $item.ExportStatus -in 'Skipped', 'Failed') {
+            $item.ImportStatus = 'Skipped'
             continue
         }
 
-        $currentIndex++
-        Write-MigrationLog -Message "Importing [$currentIndex/$totalCount]: $($item.Category) - $($item.RelativePath)" -Level Info
+        $relative = if ($item.RelativePath) { $item.RelativePath } else { $item.Category }
+        $packageSourcePath = Join-Path $dataRoot $relative
+        if ($Progress) { $Progress['Item'] = $relative }
 
-        # Determine source path inside the migration package
-        $packageSourcePath = Join-Path $PackagePath "UserData\$($item.Category)"
-        if ($item.RelativePath) {
-            $packageSourcePath = Join-Path $PackagePath "UserData\$($item.RelativePath)"
-        }
-
-        if (-not (Test-Path $packageSourcePath)) {
-            $item.ExportStatus = 'Failed'
+        if (-not (Test-Path -LiteralPath $packageSourcePath)) {
+            $item.ImportStatus = 'Failed'
             Write-MigrationLog -Message "Package source not found: $packageSourcePath" -Level Warning
             continue
         }
 
-        # Determine target path on this machine
-        $targetPath = $null
-        if ($TargetProfilePaths.ContainsKey($item.Category)) {
-            $targetPath = $TargetProfilePaths[$item.Category]
-        }
-        else {
-            # Fall back to the same relative structure under USERPROFILE
-            $targetPath = Join-Path $env:USERPROFILE $item.Category
-        }
+        $targetPath = Get-UserDataRestoreTarget -Item $item -TargetProfilePaths $TargetProfilePaths
 
         try {
-            # Ensure target directory exists
-            if (-not (Test-Path $targetPath)) {
-                New-Item -Path $targetPath -ItemType Directory -Force | Out-Null
-            }
-
-            $sourceItem = Get-Item $packageSourcePath -ErrorAction Stop
-            if ($sourceItem.PSIsContainer) {
-                # Use Robocopy with /E (not /MIR) to avoid deleting existing files on target
-                $robocopyArgs = @($packageSourcePath, $targetPath, '/E', "/R:$retries", "/W:$waitSec", "/MT:$threads", '/NP', '/NDL', '/NJH', '/NJS')
-                if ($PreserveACLs) { $robocopyArgs += '/SEC' }
-                foreach ($xf in $excludePatterns) { $robocopyArgs += '/XF'; $robocopyArgs += $xf }
-                $robocopyOutput = & robocopy @robocopyArgs 2>&1
-                $exitCode = $LASTEXITCODE
-
-                if ($exitCode -lt 8) {
-                    $item.ExportStatus = 'Success'
-                    Write-MigrationLog -Message "Import successful: $($item.Category) -> $targetPath (exit code $exitCode)" -Level Success
-
-                    # Attempt to restore ACLs from separate backup if available
-                    if ($PreserveACLs) {
+            if (Test-Path -LiteralPath $packageSourcePath -PathType Container) {
+                $restore = Restore-PackageFolder -Source $packageSourcePath -Destination $targetPath -Move:$MoveFromPackage `
+                    -CopySecurity:$PreserveACLs -Progress $Progress -SizeHint ([long]$item.SizeBytes)
+                $item.ImportStatus = if ($restore.Success) { 'Success' } else { 'Failed' }
+                if (-not $restore.Success) {
+                    Write-MigrationLog -Message "Restore failed for $relative (robocopy exit code $($restore.ExitCode))" -Level Error
+                } elseif ($PreserveACLs) {
+                    $aclFile = Join-Path (Join-Path $dataRoot 'ACLs') "$relative.json"
+                    if (Test-Path -LiteralPath $aclFile) {
                         try {
-                            $aclFile = Join-Path (Split-Path $PackagePath -Parent) "ACLs\$($item.Category).json"
-                            if (Test-Path $aclFile) {
-                                Import-FileACLs -ACLPath $aclFile -TargetBasePath $targetPath
-                                Write-MigrationLog -Message "ACLs restored for $($item.Category)" -Level Success
-                            }
+                            Import-FileACLs -ACLPath $aclFile -TargetBasePath $targetPath
                         } catch {
-                            Write-MigrationLog -Message "ACL restore failed for $($item.Category): $($_.Exception.Message)" -Level Warning
+                            Write-MigrationLog -Message "ACL restore failed for $($relative): $($_.Exception.Message)" -Level Warning
                         }
                     }
                 }
-                else {
-                    $item.ExportStatus = 'Failed'
-                    $errorLines = ($robocopyOutput | Select-Object -Last 5) -join '; '
-                    Write-MigrationLog -Message "Robocopy import failed for $($item.Category) with exit code $exitCode. $errorLines" -Level Error
-                }
+            } else {
+                New-Item -Path (Split-Path $targetPath -Parent) -ItemType Directory -Force | Out-Null
+                Copy-Item -LiteralPath $packageSourcePath -Destination $targetPath -Force -ErrorAction Stop
+                $item.ImportStatus = 'Success'
             }
-            else {
-                # Single file restore
-                $destDir = Split-Path $targetPath -Parent
-                if (-not (Test-Path $destDir)) {
-                    New-Item -Path $destDir -ItemType Directory -Force | Out-Null
-                }
-                Copy-Item -Path $packageSourcePath -Destination $targetPath -Force -ErrorAction Stop
-                $item.ExportStatus = 'Success'
-                Write-MigrationLog -Message "File imported: $packageSourcePath -> $targetPath" -Level Success
-            }
+            Write-MigrationLog -Message "Restored $relative -> $targetPath ($($item.ImportStatus))" -Level Info
+        } catch {
+            $item.ImportStatus = 'Failed'
+            Write-MigrationLog -Message "Failed to import $($relative): $($_.Exception.Message)" -Level Error
         }
-        catch {
-            $item.ExportStatus = 'Failed'
-            Write-MigrationLog -Message "Failed to import $($item.Category): $($_.Exception.Message)" -Level Error
-        }
-
-        $pctComplete = [math]::Round(($currentIndex / $totalCount) * 100, 1)
-        Write-MigrationLog -Message "User data import progress: $pctComplete% ($currentIndex/$totalCount)" -Level Debug
     }
 
-    $successCount = @($Items | Where-Object { $_.ExportStatus -eq 'Success' }).Count
-    $failCount    = @($Items | Where-Object { $_.ExportStatus -eq 'Failed' }).Count
+    $restored = @($Items | Where-Object { $_.Category -ne 'AppData' })
+    $successCount = @($restored | Where-Object { $_.ImportStatus -eq 'Success' }).Count
+    $failCount    = @($restored | Where-Object { $_.ImportStatus -eq 'Failed' }).Count
     Write-MigrationLog -Message "User profile import complete. Success: $successCount, Failed: $failCount" -Level Info
 
     return $Items

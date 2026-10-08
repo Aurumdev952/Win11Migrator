@@ -35,7 +35,12 @@ function Get-PackageFingerprint {
         [string]$Path,
 
         [Parameter()]
-        [string]$OutputFile
+        [string]$OutputFile,
+
+        # None records path, size and timestamp only: enough to tell which files are new or changed,
+        # without reading every byte.
+        [ValidateSet('SHA256', 'None')]
+        [string]$Algorithm = 'SHA256'
     )
 
     if (-not (Test-Path $Path)) {
@@ -46,7 +51,7 @@ function Get-PackageFingerprint {
     $resolvedPath = (Resolve-Path $Path).Path
     Write-MigrationLog -Message "Generating fingerprint for: $resolvedPath" -Level Info
 
-    $files = @()
+    $files = [System.Collections.Generic.List[hashtable]]::new()
     $totalSize = [long]0
     $fileCount = 0
     $errorCount = 0
@@ -72,15 +77,18 @@ function Get-PackageFingerprint {
             # Compute relative path from the root
             $relativePath = $file.FullName.Substring($resolvedPath.Length).TrimStart('\', '/')
 
-            # Compute SHA256 hash
-            $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+            $hash = if ($Algorithm -eq 'SHA256') {
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+            } else {
+                "$($file.Length):$($file.LastWriteTimeUtc.Ticks)"
+            }
 
-            $files += @{
+            $files.Add(@{
                 RelativePath     = $relativePath
                 Hash             = $hash
                 SizeBytes        = $file.Length
                 LastWriteTimeUtc = $file.LastWriteTimeUtc.ToString('o')
-            }
+            })
 
             $totalSize += $file.Length
         }
@@ -96,7 +104,7 @@ function Get-PackageFingerprint {
 
     $fingerprint = @{
         Path           = $resolvedPath
-        Files          = $files
+        Files          = $files.ToArray()
         TotalFiles     = $files.Count
         TotalSizeBytes = $totalSize
         GeneratedAt    = (Get-Date).ToUniversalTime().ToString('o')
