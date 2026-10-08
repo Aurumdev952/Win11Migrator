@@ -39,6 +39,7 @@ function Initialize-StorageSelectionPage {
         CardCustom    = $Page.FindName('cardCustom')
         BtnBrowse     = $Page.FindName('btnBrowse')
         CardNetDirect = $Page.FindName('cardNetworkDirect')
+        CardLan       = $Page.FindName('cardLanReceive')
         ChkEncrypt    = $Page.FindName('chkEncrypt')
         PanelEncPwd   = $Page.FindName('panelEncryptPassword')
         TxtEncPwd     = $Page.FindName('txtEncryptPassword')
@@ -49,7 +50,7 @@ function Initialize-StorageSelectionPage {
     $State.BtnNext.IsEnabled = $false
 
     # Card selection helper - highlights selected card
-    $allCards = @($ui.CardUSB, $ui.CardOneDrive, $ui.CardGDrive, $ui.CardNetShare, $ui.CardCustom, $ui.CardNetDirect)
+    $allCards = @($ui.CardUSB, $ui.CardOneDrive, $ui.CardGDrive, $ui.CardNetShare, $ui.CardCustom, $ui.CardNetDirect, $ui.CardLan) | Where-Object { $_ }
 
     # Detect USB drives
     Write-Host "[STORAGE] Detecting USB drives..." -ForegroundColor Cyan
@@ -201,6 +202,101 @@ function Initialize-StorageSelectionPage {
             if ($State.InsertNetworkPage) { & $State.InsertNetworkPage $State }
             $State.BtnNext.IsEnabled = $true
         }.GetNewClosure())
+    }
+
+    # --- Another PC on this network ---
+    # Discovery and pairing run in a background runspace polled by the window timer, so the page never freezes.
+    $State['LanUi'] = @{
+        Card    = $ui.CardLan
+        List    = $Page.FindName('lstReceivers')
+        Host    = $Page.FindName('txtReceiverHost')
+        Code    = $Page.FindName('txtLanPairingCode')
+        Find    = $Page.FindName('btnFindReceivers')
+        Connect = $Page.FindName('btnConnectReceiver')
+        Status  = $Page.FindName('txtReceiverStatus')
+        Cards   = $allCards
+        Page    = $Page
+        Job     = $null
+    }
+    $State['StartLanJob'] = {
+        param([hashtable]$S, [string]$Kind, [hashtable]$Arguments)
+        $lan = $S.LanUi
+        if ($lan.Job) { return }
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.Open()
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript({
+            param($Root, $Config, $Kind, $Arguments)
+            . (Join-Path $Root 'Core\Write-MigrationLog.ps1')
+            foreach ($f in 'ReceiveProtocol', 'Connect-ReceiveSession') { . (Join-Path $Root "Modules\NetworkTransfer\$f.ps1") }
+            $script:Config = $Config
+            if ($Kind -eq 'Find') { return @(Find-Receivers) }
+            return Connect-ReceiveSession -Computer $Arguments.Computer -PairingCode $Arguments.Code
+        }).AddArgument($S.MigratorRoot).AddArgument($S.Config).AddArgument($Kind).AddArgument($Arguments)
+        $lan.Job = @{ Kind = $Kind; PowerShell = $ps; Handle = $ps.BeginInvoke(); Runspace = $rs }
+        $lan.Find.IsEnabled = $false
+        $lan.Connect.IsEnabled = $false
+    }
+    $State.OnTick = {
+        param($s)
+        $lan = $s.LanUi
+        $job = $lan.Job
+        if (-not $job -or -not $job.Handle.IsCompleted) { return }
+        $lan.Job = $null
+        $lan.Find.IsEnabled = $true
+        $lan.Connect.IsEnabled = $true
+        try {
+            $result = $job.PowerShell.EndInvoke($job.Handle)
+            if ($job.PowerShell.HadErrors -and $job.PowerShell.Streams.Error.Count -gt 0) {
+                throw $job.PowerShell.Streams.Error[0].Exception
+            }
+            if ($job.Kind -eq 'Find') {
+                $lan.List.Items.Clear()
+                foreach ($r in @($result)) {
+                    $null = $lan.List.Items.Add(("{0}  ({1}, {2:N0} GB free)" -f $r.Computer, $r.Address, ($r.FreeBytes / 1GB)))
+                }
+                $lan.List.Tag = @($result)
+                $lan.List.Visibility = if (@($result).Count -gt 0) { 'Visible' } else { 'Collapsed' }
+                $lan.Status.Text = if (@($result).Count -gt 0) { 'Select the new PC, then type its pairing code.' }
+                                   else { "No PC is waiting. On the new PC choose 'Receive from another PC', or type its name or IP address." }
+            } else {
+                $target = @($result)[-1]
+                $s.StorageTarget = $target
+                foreach ($c in $lan.Cards) { $c.BorderBrush = $lan.Page.FindResource('BorderBrush') }
+                $lan.Card.BorderBrush = $lan.Page.FindResource('PrimaryBrush')
+                if ($s.RemoveNetworkPage) { & $s.RemoveNetworkPage $s }
+                $lan.Status.Text = "Connected to $($target.Computer). Click Next to start sending."
+                $s.BtnNext.IsEnabled = $true
+            }
+        } catch {
+            $lan.Status.Text = $_.Exception.Message
+        } finally {
+            $job.PowerShell.Dispose()
+            $job.Runspace.Dispose()
+        }
+    }
+
+    if ($State.LanUi.Find) {
+        $State.LanUi.Find.Add_Click({
+            $State.LanUi.Status.Text = 'Looking for PCs waiting to receive...'
+            & $State.StartLanJob $State 'Find' @{}
+        }.GetNewClosure())
+        $State.LanUi.List.Add_SelectionChanged({
+            $picked = @($State.LanUi.List.Tag)[$State.LanUi.List.SelectedIndex]
+            if ($picked) { $State.LanUi.Host.Text = $picked.Address }
+        }.GetNewClosure())
+        $State.LanUi.Connect.Add_Click({
+            $lanHost = $State.LanUi.Host.Text.Trim()
+            $lanCode = $State.LanUi.Code.Text.Trim()
+            if (-not $lanHost -or -not $lanCode) {
+                $State.LanUi.Status.Text = 'Enter the PC name (or pick one from the list) and the pairing code shown on it.'
+                return
+            }
+            $State.LanUi.Status.Text = "Connecting to $lanHost..."
+            & $State.StartLanJob $State 'Connect' @{ Computer = $lanHost; Code = $lanCode }
+        }.GetNewClosure())
+        & $State.StartLanJob $State 'Find' @{}
     }
 
     # Encryption checkbox

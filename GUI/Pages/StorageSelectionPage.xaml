@@ -28,6 +28,50 @@
                       Padding="0,0,4,0">
             <StackPanel>
 
+                <!-- Another PC on this network (recommended for same-LAN moves) -->
+                <Border x:Name="cardLanReceive" Style="{StaticResource ModeCard}" Margin="0,0,0,12" Padding="16">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Path Grid.Column="0" Data="{StaticResource FolderIcon}" Fill="{StaticResource AccentBrush}"
+                                  Width="28" Height="28" Stretch="Uniform" Margin="0,0,12,0" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="Another PC on this network (fastest)" Style="{StaticResource HeadingText}" />
+                                <TextBlock Text="On the new PC choose Receive, then pick it here and type the code it shows. Data goes straight across, once."
+                                           Style="{StaticResource CaptionText}" TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button x:Name="btnFindReceivers" Grid.Column="2" Content="Find PCs"
+                                    Style="{StaticResource SecondaryButton}" Padding="10,5" FontSize="12" VerticalAlignment="Center" />
+                        </Grid>
+                        <ListBox x:Name="lstReceivers" Margin="40,8,0,0" MaxHeight="110" Visibility="Collapsed" />
+                        <Grid Margin="40,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="140" />
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="PC name or IP address" Style="{StaticResource CaptionText}" />
+                                <TextBox x:Name="txtReceiverHost" FontSize="12" Padding="6,4" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="Pairing code" Style="{StaticResource CaptionText}" />
+                                <TextBox x:Name="txtLanPairingCode" FontSize="12" Padding="6,4" FontFamily="Consolas" CharacterCasing="Upper" MaxLength="9" />
+                            </StackPanel>
+                            <Button x:Name="btnConnectReceiver" Grid.Column="4" Content="Connect" VerticalAlignment="Bottom"
+                                    Style="{StaticResource SecondaryButton}" Padding="12,5" FontSize="12" />
+                        </Grid>
+                        <TextBlock x:Name="txtReceiverStatus" Text="" Style="{StaticResource CaptionText}"
+                                   Margin="40,6,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
                 <!-- Two-column card grid -->
                 <Grid>
                     <Grid.ColumnDefinitions>

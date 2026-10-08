@@ -125,6 +125,7 @@ function Initialize-ExportProgressPage {
         $State.SystemSettings = $result.SystemSettings
         if ($password) { $State['EncryptedPackagePath'] = $result.PackagePath }
         $errors = @($result.Errors)
+        if ($Destination.Type -eq 'LanReceive') { & net.exe use $Destination.Root /delete /y 2>&1 | Out-Null }
 
         if ($PushDirect) {
             $prog.Phase = 'Pushing to the target PC...'

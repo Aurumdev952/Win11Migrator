@@ -24,6 +24,7 @@
     scan     - Scan this PC and display discovered apps, data, browsers, settings, profiles
     export   - Run a full export (scan + package creation)
     import   - Import/restore from a migration package
+    receive  - Wait for another PC on the network to send its package, then restore it
     validate - Validate a migration package (check manifest, verify file integrity)
     status   - Show migration status from registry
 .PARAMETER Action
@@ -46,6 +47,12 @@
     .\Win11Migrator.ps1 -CLI import -PackagePath "D:\Migration\Win11Migration_PC1_20260227"
     Imports and restores from the specified package.
 .EXAMPLE
+    .\Win11Migrator.ps1 -CLI receive
+    On the new PC: shows a pairing code and restores whatever the old PC sends.
+.EXAMPLE
+    .\Win11Migrator.ps1 -CLI export -SendTo NEWPC -PairingCode ABCD-2345
+    On the old PC: exports straight into the new PC waiting in receive mode.
+.EXAMPLE
     .\Win11Migrator.ps1 -CLI validate -PackagePath "D:\Migration\Win11Migration_PC1_20260227"
     Validates the specified migration package.
 .NOTES
@@ -55,7 +62,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('', 'scan', 'export', 'import', 'validate', 'status', 'diff', 'healthcheck', 'rollback')]
+    [ValidateSet('', 'scan', 'export', 'import', 'receive', 'validate', 'status', 'diff', 'healthcheck', 'rollback')]
     [string]$CLI,
     [string]$PackagePath,
     [switch]$Backup,
@@ -70,6 +77,8 @@ param(
     [string]$ComparePath,
     [switch]$Resume,
     [switch]$MoveFromPackage,
+    [string]$SendTo,
+    [string]$PairingCode,
     [switch]$CheckForUpdates
 )
 
@@ -213,6 +222,7 @@ if ($isAdmin) {
     Set-ItemProperty -Path $regPathLM -Name 'Version' -Value $script:MigratorVersion
     Set-ItemProperty -Path $regPathLM -Name 'InstallPath' -Value $script:MigratorRoot
     Set-ItemProperty -Path $regPathLM -Name 'LastRunDate' -Value (Get-Date).ToString('o')
+    if (Get-Command Remove-StaleReceiveSession -ErrorAction SilentlyContinue) { Remove-StaleReceiveSession }
 } else {
     Write-MigrationLog -Message "Running without admin privileges. Some features may be limited." -Level Warning
 }
@@ -563,11 +573,19 @@ if ($CLI) {
                 Echo = -not $Silent
             })
             try {
-                $destination = Resolve-ExportDestination -StorageTarget $null -RequiredBytes $requiredBytes -LocalPackageRoot $outputRoot
+                $storageTarget = $null
+                if ($SendTo) {
+                    if (-not $PairingCode) { throw "-SendTo needs -PairingCode: the code shown on the receiving PC." }
+                    $storageTarget = Connect-ReceiveSession -Computer $SendTo -PairingCode $PairingCode
+                    Write-Host "  Connected to $($storageTarget.Computer); sending directly" -ForegroundColor Green
+                }
+                $destination = Resolve-ExportDestination -StorageTarget $storageTarget -RequiredBytes $requiredBytes -LocalPackageRoot $outputRoot
                 $result = Invoke-MigrationExportToDestination -Destination $destination -Selection $selection -Progress $progress -Resume:$Resume
             } catch {
                 Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
                 exit 1
+            } finally {
+                if ($storageTarget) { Disconnect-ReceiveSession -SharePath $storageTarget.Path }
             }
             $pkgPath = $result.PackagePath
             foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
@@ -682,6 +700,65 @@ if ($CLI) {
                 } | ConvertTo-Json | Set-Content (Join-Path $result.WorkPath "migration-result.json") -Encoding UTF8
                 exit $exitCode
             }
+        }
+
+        # =============================================
+        # CLI: RECEIVE - Accept a package from another PC on the LAN, then restore it
+        # =============================================
+        'receive' {
+            if (-not $isAdmin) {
+                Write-Host "ERROR: Receiving needs administrator rights (it opens a temporary network share)." -ForegroundColor Red
+                exit 1
+            }
+            $progress = [hashtable]::Synchronized(@{
+                Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+                Echo = -not $Silent
+            })
+            $session = Start-ReceiveSession
+            $worker = $null
+            $state = $null
+            try {
+                Write-Host ""
+                Write-Host "  Pairing code:  $($session.Code)" -ForegroundColor Cyan
+                Write-Host "  This PC:       $($session.Computer)  ($($session.Addresses -join ', '))" -ForegroundColor Cyan
+                Write-Host "  On the old PC run:  .\Win11Migrator.ps1 -CLI export -SendTo $($session.Computer) -PairingCode $($session.Code)" -ForegroundColor DarkGray
+                Write-Host "  Waiting for the other PC... (Ctrl+C cancels)" -ForegroundColor Yellow
+                $lastPhase = $null
+                $started = $null
+                while ($true) {
+                    $state = Get-IncomingPackageState -IncomingPath $session.IncomingPath
+                    if ($state.State -ne 'Waiting' -and -not $started) { $started = (Get-Date).ToUniversalTime() }
+                    if ($state.ManifestReady -and -not $worker) {
+                        $early = Read-MigrationManifest -ManifestPath (Join-Path $state.PackagePath 'manifest.json')
+                        $worker = Start-AppInstallWorker -Apps $early.Apps -Progress $progress
+                        Write-Host "  Manifest received; installing apps while files arrive" -ForegroundColor Green
+                    }
+                    if ($state.State -eq 'Complete') { break }
+                    if ($state.State -eq 'Failed' -and $lastPhase -ne 'Failed') {
+                        Write-Host "  The sender stopped: $($state.Errors -join '; '). Waiting for it to resume..." -ForegroundColor Yellow
+                        $lastPhase = 'Failed'
+                    } elseif ($state.State -eq 'Receiving' -and $state.Phase -ne $lastPhase) {
+                        Write-Host "  [$($state.SourceComputer)] $($state.Phase)" -ForegroundColor DarkGray
+                        $lastPhase = $state.Phase
+                    }
+                    if (-not $Silent -and $started) {
+                        $rate = Format-TransferRate -BytesDone $state.BytesDone -BytesTotal $state.BytesTotal -StartedUtc $started
+                        if ($rate) { Write-Progress -Activity 'Receiving' -Status $rate }
+                    }
+                    Start-Sleep -Seconds 1
+                }
+            } finally {
+                Stop-ReceiveSession -Session $session
+            }
+            Write-Progress -Activity 'Receiving' -Completed
+
+            $manifest = Read-MigrationManifest -ManifestPath (Join-Path $state.PackagePath 'manifest.json')
+            Write-Host "  Package received from $($manifest.SourceComputerName); restoring" -ForegroundColor Green
+            $result = Invoke-MigrationImport -PackagePath $state.PackagePath -Manifest $manifest -Progress $progress -AppWorker $worker -MoveFromPackage
+            foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
+            Write-Host "  Restore complete: $($result.Succeeded) restored, $($result.Failed) failed" -ForegroundColor Green
+            if ($result.CompletionReportPath) { Write-Host "  Report: $($result.CompletionReportPath)" -ForegroundColor Cyan }
+            exit $(if ($result.Failed -gt 0) { 1 } else { 0 })
         }
 
         # =============================================

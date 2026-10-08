@@ -80,7 +80,7 @@ function Show-MainWindow {
 
     # --- Shared state (synchronized for thread-safe access from background runspaces) ---
     $state = [hashtable]::Synchronized(@{
-        Mode              = $null        # 'Export' or 'Import'
+        Mode              = $null        # 'Export', 'Import' or 'Receive'
         Config            = $Config
         MigratorRoot      = $MigratorRoot
         Window            = $window
@@ -88,6 +88,7 @@ function Show-MainWindow {
         CurrentPageIndex  = 0
         ExportPages       = @('WelcomePage', 'LicensePage', 'ScanProgressPage', 'AppSelectionPage', 'DataSelectionPage', 'StorageSelectionPage', 'ExportProgressPage', 'CompletionPage')
         ImportPages       = @('WelcomePage', 'LicensePage', 'ImportSourcePage', 'ImportProgressPage', 'CompletionPage')
+        ReceivePages      = @('WelcomePage', 'LicensePage', 'ReceivePage', 'ImportProgressPage', 'CompletionPage')
         Pages             = @('WelcomePage')  # Start with just welcome
         Apps              = @()
         UserData          = @()
@@ -222,10 +223,10 @@ function Show-MainWindow {
     $state['SetMode'] = {
         param([string]$Mode, [hashtable]$State)
         $State.Mode = $Mode
-        if ($Mode -eq 'Export') {
-            $State.Pages = $State.ExportPages
-        } else {
-            $State.Pages = $State.ImportPages
+        $State.Pages = switch ($Mode) {
+            'Export'  { $State.ExportPages }
+            'Receive' { $State.ReceivePages }
+            default   { $State.ImportPages }
         }
         # Navigate to page 1 (after welcome)
         $State.BtnNext.Visibility = 'Visible'
@@ -303,6 +304,15 @@ function Show-MainWindow {
             }
         } catch {}
         $state.ActiveJob = $null
+    }
+    # A receive session opens a share, an account and firewall rules; never leave them behind
+    if ($state.ReceiveSession) {
+        try { Stop-ReceiveSession -Session $state.ReceiveSession } catch {}
+        $state.ReceiveSession = $null
+    }
+    if ($state.AppWorker) {
+        try { $state.AppWorker.PowerShell.Stop(); $state.AppWorker.PowerShell.Dispose(); $state.AppWorker.Runspace.Dispose() } catch {}
+        $state.AppWorker = $null
     }
     # Stop and dispose any active scan runspaces
     if ($state.ScanCtx) {
