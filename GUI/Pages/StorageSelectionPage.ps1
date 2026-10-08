@@ -197,7 +197,7 @@ function Initialize-StorageSelectionPage {
         $ui.CardNetDirect.Add_MouseLeftButtonUp({
             foreach ($c in $allCards) { $c.BorderBrush = $Page.FindResource('BorderBrush') }
             $ui.CardNetDirect.BorderBrush = $Page.FindResource('PrimaryBrush')
-            $State.StorageTarget = @{ Type = 'NetworkDirect'; Path = '' }
+            $State.StorageTarget = @{ Type = 'AdminShare'; Path = '' }
             # Insert NetworkTargetPage into the wizard so user is prompted for hostname/credentials
             if ($State.InsertNetworkPage) { & $State.InsertNetworkPage $State }
             $State.BtnNext.IsEnabled = $true
