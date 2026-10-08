@@ -79,6 +79,8 @@ param(
     [switch]$MoveFromPackage,
     [string]$SendTo,
     [string]$PairingCode,
+    [string[]]$ExcludeDir,
+    [string[]]$ExcludeFile,
     [switch]$CheckForUpdates
 )
 
@@ -238,7 +240,7 @@ if ($ScheduleBackup) {
     $scriptPath = Join-Path $script:MigratorRoot 'Win11Migrator.ps1'
     $outputPath = if ($BackupPath) { $BackupPath } else { $script:Config.PackagePath }
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Backup -BackupPath `"$outputPath`""
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Backup -Incremental -BackupPath `"$outputPath`""
     $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At '2:00AM'
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd -AllowStartIfOnBatteries
 
@@ -265,73 +267,35 @@ if ($Backup) {
     Write-Host ""
 
     $outputDir = if ($BackupPath) { $BackupPath } else { $script:Config.PackagePath }
-    $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $pkgName = "Win11Backup_$($env:COMPUTERNAME)_$timestamp"
+    # Incremental backups refresh one rolling folder; robocopy then copies only files that changed
+    $pkgName = if ($Incremental) { "Win11Backup_$($env:COMPUTERNAME)_Latest" } else { "Win11Backup_$($env:COMPUTERNAME)_$(Get-Date -Format 'yyyyMMdd_HHmmss')" }
     $pkgPath = Join-Path $outputDir $pkgName
-    New-Item -Path $pkgPath -ItemType Directory -Force | Out-Null
 
-    Write-Host "[1/5] Scanning installed applications..." -ForegroundColor Yellow
-    $apps = Get-InstalledApps
+    Write-Host "[1/3] Scanning installed applications..." -ForegroundColor Yellow
+    $apps = @(Get-InstalledApps)
     Write-Host "  Found $($apps.Count) applications" -ForegroundColor Green
 
-    Write-Host "[2/5] Detecting user data folders..." -ForegroundColor Yellow
+    Write-Host "[2/3] Detecting user data folders and application profiles..." -ForegroundColor Yellow
     $userData = @(Get-DefaultUserDataItems -SkipCloudSynced)
-    Write-Host "  Found $($userData.Count) user data folders" -ForegroundColor Green
-
-    Write-Host "[3/5] Exporting user data..." -ForegroundColor Yellow
-    $dataDir = Join-Path $pkgPath "UserData"
-    New-Item -Path $dataDir -ItemType Directory -Force | Out-Null
-    $exportData = @($userData | Where-Object { -not $_.SkipCloudSync })
-    $skippedCloud = @($userData | Where-Object { $_.SkipCloudSync })
-    if ($skippedCloud.Count -gt 0) {
-        Write-Host "  Skipping $($skippedCloud.Count) cloud-synced folder(s) (will re-sync)" -ForegroundColor Cyan
-        foreach ($sk in $skippedCloud) { $sk.ExportStatus = 'Skipped' }
-    }
-    try {
-        if ($Incremental) {
-            # Incremental backup: only copy changed files since last backup
-            $lastBackupPath = (Get-ItemProperty -Path 'HKCU:\SOFTWARE\AuthorityGate\Win11Migrator' -Name 'LastBackupPath' -ErrorAction SilentlyContinue).LastBackupPath
-            if ($lastBackupPath -and (Test-Path (Join-Path $lastBackupPath "fingerprint.json"))) {
-                Write-Host "  Incremental mode: comparing against $lastBackupPath" -ForegroundColor Cyan
-                Export-IncrementalProfile -Items $exportData -OutputDirectory $dataDir -PreviousPackagePath $lastBackupPath | Out-Null
-            } else {
-                Write-Host "  No previous backup found, performing full backup" -ForegroundColor Yellow
-                Export-UserProfile -Items $exportData -OutputDirectory $dataDir | Out-Null
-            }
-        } else {
-            Export-UserProfile -Items $exportData -OutputDirectory $dataDir | Out-Null
-        }
-        Write-Host "  User data exported" -ForegroundColor Green
-    } catch {
-        Write-Host "  WARNING: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-
-    Write-Host "[4/5] Detecting and exporting application profiles..." -ForegroundColor Yellow
     $appProfiles = @(Get-DetectedAppProfiles -InstalledApps $apps)
-    Write-Host "  Detected $($appProfiles.Count) application profiles" -ForegroundColor Green
-    if ($appProfiles.Count -gt 0) {
-        $profilesDir = Join-Path $pkgPath "AppProfiles"
-        New-Item -Path $profilesDir -ItemType Directory -Force | Out-Null
-        $exported = Export-AppProfiles -Profiles $appProfiles -OutputPath $profilesDir
-        Write-Host "  Exported $exported application profiles" -ForegroundColor Green
-    }
+    Write-Host "  Found $($userData.Count) folders, $($appProfiles.Count) application profiles" -ForegroundColor Green
 
-    Write-Host "[5/5] Writing backup manifest..." -ForegroundColor Yellow
-    ConvertTo-MigrationManifest -OutputPath $pkgPath `
-        -Apps $apps `
-        -UserData $userData `
-        -AppProfiles $appProfiles `
-        -Metadata @{ BackupMode = $true; BackupDate = (Get-Date).ToString('o'); Incremental = [bool]$Incremental }
-    Write-Host "  Manifest written" -ForegroundColor Green
-
-    # Generate fingerprint for incremental backup support
-    try {
-        $fingerprint = Get-PackageFingerprint -PackagePath $pkgPath
-        $fingerprint | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $pkgPath "fingerprint.json") -Encoding UTF8
-        Write-Host "  Package fingerprint generated" -ForegroundColor Green
-    } catch {
-        Write-Host "  WARNING: Fingerprint generation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "[3/3] Writing backup to $pkgPath..." -ForegroundColor Yellow
+    $progress = [hashtable]::Synchronized(@{
+        Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+        Echo = $true
+    })
+    $selection = @{
+        Apps           = $apps
+        UserData       = $userData
+        AppProfiles    = $appProfiles
+        SettingsFlags  = @{}
+        IncludeAppData = $false
+        Exclusions     = Get-MigrationExclusions -ExtraDirectories $ExcludeDir -ExtraFiles $ExcludeFile
     }
+    $result = Invoke-MigrationExport -PackagePath $pkgPath -Selection $selection -Progress $progress
+    Write-TransferStatus -PackagePath $pkgPath -State Complete -Phase 'Complete' -BytesTotal ([long]$progress.BytesTotal) -BytesDone ([long]$progress.BytesDone) -Errors $result.Errors
+    foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
     # Update registry with last backup info
     Set-ItemProperty -Path $regPath -Name 'LastBackupDate' -Value (Get-Date).ToString('o')
@@ -523,7 +487,8 @@ if ($CLI) {
             Write-Host "  Found $($apps.Count) applications" -ForegroundColor Green
 
             Write-Host "[2/4] Detecting user data and browser profiles..." -ForegroundColor Yellow
-            $exclusions = Get-MigrationExclusions
+            $exclusions = Get-MigrationExclusions -ExtraDirectories $ExcludeDir -ExtraFiles $ExcludeFile
+            Write-Host "  Excluding folders: $($exclusions.Directories -join ', ')" -ForegroundColor DarkGray
             $userData = @(Get-DefaultUserDataItems -SkipCloudSynced)
             foreach ($item in $userData | Where-Object { -not $_.SkipCloudSync }) {
                 $item.SizeBytes = (Measure-RobocopySource -Source $item.SourcePath -Exclusions $exclusions).Bytes
