@@ -121,18 +121,13 @@ function Get-LogEntries {
         [int]$MaxEntries = 100
     )
 
-    $entries = @()
-    $count = 0
-    while ($count -lt $MaxEntries) {
-        $entry = $null
-        if ($script:LogQueue.TryDequeue([ref]$entry)) {
-            $entries += $entry
-            $count++
-        } else {
-            break
-        }
+    $entries = [System.Collections.Generic.List[string]]::new()
+    $entry = $null
+    while ($entries.Count -lt $MaxEntries -and $script:LogQueue.TryDequeue([ref]$entry)) {
+        $entries.Add($entry)
     }
-    return $entries
+    # The comma keeps a single entry an array; otherwise $entries[0] would be its first character
+    return , $entries.ToArray()
 }
 
 function Clear-LogQueue {

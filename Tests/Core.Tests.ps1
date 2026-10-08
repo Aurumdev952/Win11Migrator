@@ -18,24 +18,24 @@
     Pester tests for Core module functions.
 #>
 
-# Import required modules
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
 
 Describe "Core Module Tests" {
 
     BeforeAll {
-        . "$ProjectRoot\Core\Initialize-Environment.ps1"
-        . "$ProjectRoot\Core\Write-MigrationLog.ps1"
-        . "$ProjectRoot\Core\Test-AdminPrivilege.ps1"
-        . "$ProjectRoot\Core\Invoke-WithRetry.ps1"
-        . "$ProjectRoot\Core\Get-DiskSpaceEstimate.ps1"
-        . "$ProjectRoot\Core\ConvertTo-MigrationManifest.ps1"
-        . "$ProjectRoot\Core\Read-MigrationManifest.ps1"
+        $ProjectRoot = Split-Path $PSScriptRoot -Parent
+        if (-not $env:COMPUTERNAME) { $env:COMPUTERNAME = 'TESTPC' }
+        . "$ProjectRoot/Core/Initialize-Environment.ps1"
+        . "$ProjectRoot/Core/Write-MigrationLog.ps1"
+        . "$ProjectRoot/Core/Test-AdminPrivilege.ps1"
+        . "$ProjectRoot/Core/Invoke-WithRetry.ps1"
+        . "$ProjectRoot/Core/Get-DiskSpaceEstimate.ps1"
+        . "$ProjectRoot/Core/ConvertTo-MigrationManifest.ps1"
+        . "$ProjectRoot/Core/Read-MigrationManifest.ps1"
     }
 
-    Context "Initialize-Environment" {
+    Context "Initialize-Environment" -Tag "Windows" {
         It "Should use AppSettings.json as the runtime version source" {
-            $config = Get-Content (Join-Path $ProjectRoot "Config\AppSettings.json") -Raw | ConvertFrom-Json
+            $config = Get-Content (Join-Path $ProjectRoot "Config/AppSettings.json") -Raw | ConvertFrom-Json
             $entryPoint = Get-Content (Join-Path $ProjectRoot "Win11Migrator.ps1") -Raw
 
             $entryPoint | Should -Match "AppSettings\.json"
@@ -99,7 +99,7 @@ Describe "Core Module Tests" {
         }
     }
 
-    Context "Test-AdminPrivilege" {
+    Context "Test-AdminPrivilege" -Tag "Windows" {
         It "Should return a boolean" {
             $result = Test-AdminPrivilege
             $result | Should -BeOfType [bool]
@@ -130,7 +130,7 @@ Describe "Core Module Tests" {
 
     Context "MigrationManifest round-trip" {
         It "Should serialize and deserialize a manifest" {
-            $tempDir = Join-Path $env:TEMP "Win11Migrator_Test_$(Get-Random)"
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "Win11Migrator_Test_$(Get-Random)"
             New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
 
             try {

@@ -18,15 +18,15 @@
     Pester tests for App Discovery module.
 #>
 
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
 
 Describe "App Discovery Module Tests" {
 
     BeforeAll {
-        . "$ProjectRoot\Core\Initialize-Environment.ps1"
-        . "$ProjectRoot\Core\Write-MigrationLog.ps1"
+        $ProjectRoot = Split-Path $PSScriptRoot -Parent
+        . "$ProjectRoot/Core/Initialize-Environment.ps1"
+        . "$ProjectRoot/Core/Write-MigrationLog.ps1"
         $script:MigratorRoot = $ProjectRoot
-        Get-ChildItem "$ProjectRoot\Modules\AppDiscovery\*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/AppDiscovery/*.ps1" | ForEach-Object { . $_.FullName }
     }
 
     Context "Get-NormalizedAppName" {
@@ -70,28 +70,28 @@ Describe "App Discovery Module Tests" {
 
     Context "Config files" {
         It "Should load ExcludedApps.json" {
-            $path = Join-Path $ProjectRoot "Config\ExcludedApps.json"
+            $path = Join-Path $ProjectRoot "Config/ExcludedApps.json"
             Test-Path $path | Should -Be $true
             $data = Get-Content $path -Raw | ConvertFrom-Json
             $data.Count | Should -BeGreaterThan 0
         }
 
         It "Should load NiniteAppList.json" {
-            $path = Join-Path $ProjectRoot "Config\NiniteAppList.json"
+            $path = Join-Path $ProjectRoot "Config/NiniteAppList.json"
             Test-Path $path | Should -Be $true
             $data = Get-Content $path -Raw | ConvertFrom-Json
             $data | Should -Not -BeNullOrEmpty
         }
 
         It "Should load VendorDownloadUrls.json" {
-            $path = Join-Path $ProjectRoot "Config\VendorDownloadUrls.json"
+            $path = Join-Path $ProjectRoot "Config/VendorDownloadUrls.json"
             Test-Path $path | Should -Be $true
             $data = Get-Content $path -Raw | ConvertFrom-Json
             $data | Should -Not -BeNullOrEmpty
         }
 
         It "Should load StoreAppCatalog.json" {
-            $path = Join-Path $ProjectRoot "Config\StoreAppCatalog.json"
+            $path = Join-Path $ProjectRoot "Config/StoreAppCatalog.json"
             Test-Path $path | Should -Be $true
             $data = Get-Content $path -Raw | ConvertFrom-Json
             $data | Should -Not -BeNullOrEmpty
