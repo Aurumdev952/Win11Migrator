@@ -53,101 +53,71 @@ function Unprotect-MigrationPackage {
         $inputStream = [System.IO.File]::OpenRead($EncryptedFile)
         try {
             $reader = New-Object System.IO.BinaryReader($inputStream)
-            try {
-                # ---- Step 1: Read and verify magic bytes ----
-                $magic = $reader.ReadBytes(8)
-                $expectedMagic = [byte[]]@(0x57, 0x31, 0x31, 0x4D, 0x43, 0x52, 0x50, 0x54)
 
-                $magicValid = $true
-                if ($magic.Length -ne 8) {
-                    $magicValid = $false
-                } else {
-                    for ($i = 0; $i -lt 8; $i++) {
-                        if ($magic[$i] -ne $expectedMagic[$i]) {
-                            $magicValid = $false
-                            break
-                        }
-                    }
-                }
-
-                if (-not $magicValid) {
-                    Write-MigrationLog -Message "Invalid file format: missing W11MCRYPT magic bytes" -Level Error
-                    return @{ OutputDirectory = ''; Success = $false }
-                }
-
-                # ---- Step 2: Read version, salt, IV ----
-                $version = $reader.ReadUInt32()
-                if ($version -ne 1) {
-                    Write-MigrationLog -Message "Unsupported encryption format version: $version" -Level Error
-                    return @{ OutputDirectory = ''; Success = $false }
-                }
-
-                $saltLength = $reader.ReadUInt32()
-                $salt       = $reader.ReadBytes([int]$saltLength)
-
-                $ivLength = $reader.ReadUInt32()
-                $iv       = $reader.ReadBytes([int]$ivLength)
-
-                Write-MigrationLog -Message "File header parsed: version=$version, saltLen=$saltLength, ivLen=$ivLength" -Level Debug
-
-                # Read remaining bytes as encrypted data
-                $remainingLength = [int]($inputStream.Length - $inputStream.Position)
-                $encryptedBytes  = $reader.ReadBytes($remainingLength)
-
-            } finally {
-                $reader.Dispose()
+            # ---- Step 1: Read and verify magic bytes ----
+            $magic = $reader.ReadBytes(8)
+            $expectedMagic = [byte[]]@(0x57, 0x31, 0x31, 0x4D, 0x43, 0x52, 0x50, 0x54)
+            $magicValid = ($magic.Length -eq 8)
+            for ($i = 0; $magicValid -and $i -lt 8; $i++) {
+                if ($magic[$i] -ne $expectedMagic[$i]) { $magicValid = $false }
             }
-        } finally {
-            $inputStream.Dispose()
-        }
+            if (-not $magicValid) {
+                Write-MigrationLog -Message "Invalid file format: missing W11MCRYPT magic bytes" -Level Error
+                return @{ OutputDirectory = ''; Success = $false }
+            }
 
-        # ---- Step 3: Derive key using PBKDF2 ----
-        $passwordPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
-        )
+            # ---- Step 2: Read version, salt, IV ----
+            $version = $reader.ReadUInt32()
+            if ($version -ne 1) {
+                Write-MigrationLog -Message "Unsupported encryption format version: $version" -Level Error
+                return @{ OutputDirectory = ''; Success = $false }
+            }
+            $saltLength = $reader.ReadUInt32()
+            $salt       = $reader.ReadBytes([int]$saltLength)
+            $ivLength   = $reader.ReadUInt32()
+            $iv         = $reader.ReadBytes([int]$ivLength)
+            Write-MigrationLog -Message "File header parsed: version=$version, saltLen=$saltLength, ivLen=$ivLength" -Level Debug
 
-        $deriveBytes = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
-            $passwordPlain, $salt, 100000
-        )
-        try {
-            $key       = $deriveBytes.GetBytes(32)
-            $derivedIv = $deriveBytes.GetBytes(16)
-        } finally {
-            $deriveBytes.Dispose()
-        }
+            # ---- Step 3: Derive key using PBKDF2 ----
+            $passwordPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+            )
+            $deriveBytes = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
+                $passwordPlain, $salt, 100000
+            )
+            try {
+                $key       = $deriveBytes.GetBytes(32)
+                $derivedIv = $deriveBytes.GetBytes(16)
+            } finally {
+                $deriveBytes.Dispose()
+            }
+            $passwordPlain = $null
 
-        # Clear plaintext password from memory
-        $passwordPlain = $null
-
-        # ---- Step 4: Decrypt using AES-256-CBC ----
-        $decryptedBytes = $null
-        $aes = New-Object System.Security.Cryptography.AesManaged
-        try {
+            # ---- Step 4: Stream-decrypt the remainder of the file into a temp zip ----
+            $tempZip = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ([System.IO.Path]::GetRandomFileName() + '.zip')
+            $aes = New-Object System.Security.Cryptography.AesManaged
             $aes.KeySize   = 256
             $aes.BlockSize = 128
             $aes.Mode      = [System.Security.Cryptography.CipherMode]::CBC
             $aes.Padding   = [System.Security.Cryptography.PaddingMode]::PKCS7
             $aes.Key       = $key
             $aes.IV        = $iv
-
-            $decryptor = $aes.CreateDecryptor()
+            $zipStream = [System.IO.File]::Create($tempZip)
+            $cryptoStream = New-Object System.Security.Cryptography.CryptoStream(
+                $inputStream, $aes.CreateDecryptor(), [System.Security.Cryptography.CryptoStreamMode]::Read)
             try {
-                $decryptedBytes = $decryptor.TransformFinalBlock($encryptedBytes, 0, $encryptedBytes.Length)
+                $cryptoStream.CopyTo($zipStream, 4MB)
             } catch [System.Security.Cryptography.CryptographicException] {
                 Write-MigrationLog -Message "Decryption failed: incorrect password or corrupted file" -Level Error
                 return @{ OutputDirectory = ''; Success = $false }
             } finally {
-                $decryptor.Dispose()
+                $zipStream.Dispose()
+                try { $cryptoStream.Dispose() } catch {}
+                $aes.Dispose()
             }
         } finally {
-            $aes.Dispose()
+            $inputStream.Dispose()
         }
-
-        Write-MigrationLog -Message "Decrypted payload size: $($decryptedBytes.Length) bytes" -Level Debug
-
-        # ---- Step 5: Write decrypted bytes to temp zip ----
-        $tempZip = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ([System.IO.Path]::GetRandomFileName() + '.zip')
-        [System.IO.File]::WriteAllBytes($tempZip, $decryptedBytes)
 
         # Validate the zip is well-formed (catches wrong-password garbage)
         try {

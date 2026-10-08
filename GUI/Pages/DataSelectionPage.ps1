@@ -59,6 +59,32 @@ function Initialize-DataSelectionPage {
     # Track cloud sync toggle buttons so bulk actions can update them
     $cloudToggles = @{}
 
+    # --- Folder sizing ---
+    # Robocopy /L measures each folder with the active exclusions in a background runspace,
+    # so the page stays responsive on large profiles. Results land in each item's SizeBytes.
+    if (-not $State.Exclusions) { $State['Exclusions'] = Get-MigrationExclusions -Config $State.Config }
+    $sizeRows = [System.Collections.ArrayList]::new()
+    $sizer = [hashtable]::Synchronized(@{ Generation = 0; Jobs = [System.Collections.ArrayList]::new() })
+    $startSizing = {
+        $sizer.Generation++
+        $pendingItems = @($sizeRows | Where-Object { $null -eq $_.Item.SizeBytes } | ForEach-Object { $_.Item })
+        if ($pendingItems.Count -eq 0) { return }
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.Open()
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript({
+            param($Items, $Exclusions, $Root, $Sizer, $Generation, $Config)
+            . (Join-Path $Root 'Core\Invoke-Robocopy.ps1')
+            $script:Config = $Config
+            foreach ($it in $Items) {
+                if ($Sizer.Generation -ne $Generation) { return }
+                try { $it.SizeBytes = [long](Measure-RobocopySource -Source $it.SourcePath -Exclusions $Exclusions).Bytes } catch { $it.SizeBytes = 0L }
+            }
+        }).AddArgument($pendingItems).AddArgument($State.Exclusions).AddArgument($State.MigratorRoot).AddArgument($sizer).AddArgument($sizer.Generation).AddArgument($State.Config)
+        $null = $sizer.Jobs.Add(@{ PowerShell = $ps; Handle = $ps.BeginInvoke(); Runspace = $rs })
+    }.GetNewClosure()
+
     # --- Detect cloud-synced folders ---
     $cloudItems = @()
     if ($State.UserData -and $State.UserData.Count -gt 0) {
@@ -124,6 +150,8 @@ function Initialize-DataSelectionPage {
             $cb.Content = $label
             try { $cb.Style = $Page.FindResource('MigratorCheckBox') } catch {}
             $cb.Tag = $item
+            if ($item -is [hashtable] -and -not $item.ContainsKey('SizeBytes')) { $item['SizeBytes'] = $null }
+            $null = $sizeRows.Add(@{ Item = $item; CheckBox = $cb; Label = $label })
             $cb.Add_Checked({ $this.Tag.Selected = $true })
             $cb.Add_Unchecked({ $this.Tag.Selected = $false })
             [System.Windows.Controls.Grid]::SetColumn($cb, 0)
@@ -188,7 +216,7 @@ function Initialize-DataSelectionPage {
                 }
                 $folderName = [System.IO.Path]::GetFileName($folderPath)
                 $topItems = @(Get-ChildItem $folderPath -ErrorAction SilentlyContinue -Force)
-                $newItem = @{ Name = $folderName; SourcePath = $folderPath; ItemCount = $topItems.Count; Selected = $true; IsCustom = $true; IsOneDrive = $false }
+                $newItem = @{ Name = $folderName; SourcePath = $folderPath; ItemCount = $topItems.Count; Selected = $true; IsCustom = $true; IsOneDrive = $false; SizeBytes = $null }
                 $State.UserData += $newItem
 
                 # Add checkbox to panel
@@ -201,6 +229,8 @@ function Initialize-DataSelectionPage {
                 $cb.Add_Checked({ $this.Tag.Selected = $true }.GetNewClosure())
                 $cb.Add_Unchecked({ $this.Tag.Selected = $false }.GetNewClosure())
                 $ui.PanelUserData.Children.Add($cb) | Out-Null
+                $null = $sizeRows.Add(@{ Item = $newItem; CheckBox = $cb; Label = $cb.Content })
+                & $startSizing
                 Write-Host "[DATA] Custom folder added: $folderPath ($($topItems.Count) items)" -ForegroundColor Green
             }
         }.GetNewClosure())
@@ -344,13 +374,35 @@ function Initialize-DataSelectionPage {
         $ui.ChkPower.Add_Unchecked({ $State.IncludePower = $false }.GetNewClosure())
     }
 
-    # --- Total size display ---
-    $selectedFolders = @($State.UserData | Where-Object { $_.Selected }).Count
-    $selectedBrowsers = @($State.BrowserProfiles | Where-Object { $_.Selected }).Count
-    $settingsCount = if ($State.SystemSettings) { ($State.SystemSettings | Measure-Object -Property Count -Sum).Sum } else { 0 }
-    if ($ui.TotalSize) {
-        $ui.TotalSize.Text = "$selectedFolders folders, $selectedBrowsers browser profiles, $settingsCount settings"
-    }
+    # --- Sizes and total, refreshed by the window timer while sizing runs ---
+    $State.OnTick = {
+        param($s)
+        $total = 0L
+        $measuring = $false
+        foreach ($row in $sizeRows) {
+            $bytes = $row.Item.SizeBytes
+            $sizeText = if ($null -eq $bytes) { $measuring = $true; 'measuring...' }
+                        elseif ($bytes -ge 1GB) { '{0:N1} GB' -f ($bytes / 1GB) }
+                        else { '{0:N0} MB' -f ($bytes / 1MB) }
+            $text = "$($row.Label) - $sizeText"
+            if ($row.CheckBox.Content -ne $text) { $row.CheckBox.Content = $text }
+            if ($null -ne $bytes -and $row.Item.Selected -and -not $row.Item.SkipCloudSync) { $total += $bytes }
+        }
+        if ($ui.TotalSize) {
+            $folders = @($sizeRows | Where-Object { $_.Item.Selected }).Count
+            $suffix = if ($measuring) { ' (still measuring)' } else { '' }
+            $ui.TotalSize.Text = ('{0} folders selected, {1:N1} GB to copy{2}' -f $folders, ($total / 1GB), $suffix)
+        }
+        foreach ($job in @($sizer.Jobs)) {
+            if ($job.Handle.IsCompleted) {
+                try { $job.PowerShell.EndInvoke($job.Handle) } catch {}
+                $job.PowerShell.Dispose()
+                $job.Runspace.Dispose()
+                $sizer.Jobs.Remove($job)
+            }
+        }
+    }.GetNewClosure()
+    & $startSizing
 
     # --- Migration Profile support ---
     # If a profile is loaded, apply its selections

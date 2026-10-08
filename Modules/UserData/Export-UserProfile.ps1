@@ -15,17 +15,17 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Exports selected user data folders using Robocopy with progress tracking.
+    Exports selected user data folders through the shared Robocopy wrapper.
 .DESCRIPTION
-    Takes an array of UserDataItem objects and an output directory. Each selected item
-    is copied via Robocopy with multi-threaded, retry-capable flags. Progress is parsed
-    from Robocopy output and each item's ExportStatus is updated accordingly.
+    Each selected item is copied with Invoke-Robocopy (junctions skipped, exclusions applied,
+    live byte progress). Each item's ExportStatus is updated, and SizeBytes is filled from
+    the bytes actually copied when the scan did not measure it.
 .PARAMETER Items
     UserDataItem[] of folders/files to export.
 .PARAMETER OutputDirectory
-    Root directory of the migration package where files will be stored.
-.PARAMETER ExcludePatterns
-    File patterns to exclude (e.g. *.tmp, ~$*). Defaults come from config.
+    The package's UserData directory; each item lands in OutputDirectory\<RelativePath>.
+.PARAMETER Exclusions
+    Hashtable with Directories and Files, from Get-MigrationExclusions.
 .OUTPUTS
     [UserDataItem[]] Updated items with ExportStatus set.
 #>
@@ -34,129 +34,87 @@ function Export-UserProfile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [UserDataItem[]]$Items,
 
         [Parameter(Mandatory)]
         [string]$OutputDirectory,
 
-        [string[]]$ExcludePatterns,
+        [hashtable]$Exclusions = (Get-MigrationExclusions),
+
+        [ValidateSet('Local', 'USB', 'Network', 'Cloud')]
+        [string]$TargetKind = 'Local',
+
+        [hashtable]$Progress,
+
+        [scriptblock]$OnProgress,
 
         [switch]$PreserveACLs
     )
 
     Write-MigrationLog -Message "Beginning user profile export to $OutputDirectory" -Level Info
 
-    # Load default exclude patterns from config if not supplied
-    if (-not $ExcludePatterns -and $script:Config -and $script:Config['ExcludeFilePatterns']) {
-        $ExcludePatterns = @()
-        foreach ($p in $script:Config['ExcludeFilePatterns']) {
-            $ExcludePatterns += $p.ToString()
-        }
-    }
-    if (-not $ExcludePatterns) {
-        $ExcludePatterns = @('*.tmp', '~$*', 'Thumbs.db', 'desktop.ini', '*.log')
-    }
-
-    # Robocopy settings
-    $threads  = if ($script:Config -and $script:Config['RobocopyThreads'])      { $script:Config['RobocopyThreads'] }      else { 8 }
-    $retries  = if ($script:Config -and $script:Config['RobocopyRetries'])       { $script:Config['RobocopyRetries'] }      else { 3 }
-    $waitSec  = if ($script:Config -and $script:Config['RobocopyWaitSeconds'])   { $script:Config['RobocopyWaitSeconds'] }  else { 5 }
-
-    $selectedItems = $Items | Where-Object { $_.Selected }
-    $totalCount = @($selectedItems).Count
+    $selectedItems = @($Items | Where-Object { $_.Selected })
+    $totalCount = $selectedItems.Count
     $currentIndex = 0
-
-    Write-MigrationLog -Message "Exporting $totalCount user data items" -Level Info
 
     foreach ($item in $Items) {
         if (-not $item.Selected) {
             $item.ExportStatus = 'Skipped'
-            Write-MigrationLog -Message "Skipped (not selected): $($item.SourcePath)" -Level Debug
             continue
         }
 
         $currentIndex++
+        if ($Progress) { $Progress['Item'] = "$($item.RelativePath) ($currentIndex of $totalCount)" }
         Write-MigrationLog -Message "Exporting [$currentIndex/$totalCount]: $($item.Category) - $($item.SourcePath)" -Level Info
 
-        # Validate source
-        if (-not (Test-Path $item.SourcePath)) {
+        if (-not (Test-Path -LiteralPath $item.SourcePath)) {
             $item.ExportStatus = 'Failed'
             Write-MigrationLog -Message "Source path does not exist: $($item.SourcePath)" -Level Warning
             continue
         }
 
-        # Build destination path preserving the relative structure
-        # $OutputDirectory is already the UserData subdirectory of the package
-        $destPath = Join-Path $OutputDirectory $item.Category
-        if ($item.RelativePath) {
-            $destPath = Join-Path $OutputDirectory $item.RelativePath
-        }
+        $relative = if ($item.RelativePath) { $item.RelativePath } else { $item.Category }
+        $destPath = Join-Path $OutputDirectory $relative
 
         try {
-            # Ensure destination directory exists
-            if (-not (Test-Path $destPath)) {
-                New-Item -Path $destPath -ItemType Directory -Force | Out-Null
-            }
-
-            $sourcePath = $item.SourcePath
-
-            # Determine if source is a file or directory
-            $sourceItem = Get-Item $sourcePath -ErrorAction Stop
+            $sourceItem = Get-Item -LiteralPath $item.SourcePath -Force -ErrorAction Stop
             if ($sourceItem.PSIsContainer) {
-                # Directory copy via Robocopy
-                Write-MigrationLog -Message "Robocopy: $sourcePath -> $destPath" -Level Debug
-
-                $robocopyArgs = @($sourcePath, $destPath, '/MIR', "/R:$retries", "/W:$waitSec", "/MT:$threads", '/NP', '/NDL', '/NJH', '/NJS')
-                if ($PreserveACLs) { $robocopyArgs += '/SEC' }
-                foreach ($xf in $ExcludePatterns) { $robocopyArgs += '/XF'; $robocopyArgs += $xf }
-                $robocopyOutput = & robocopy @robocopyArgs 2>&1
-                $exitCode = $LASTEXITCODE
-
-                # Robocopy exit codes: 0-7 are success/informational, 8+ are errors
-                if ($exitCode -lt 8) {
+                $copy = Invoke-Robocopy -Source $item.SourcePath -Destination $destPath -TargetKind $TargetKind `
+                    -Exclusions $Exclusions -CopySecurity:$PreserveACLs -Progress $Progress -OnProgress $OnProgress
+                if (-not $item.SizeBytes) { $item.SizeBytes = $copy.Bytes }
+                if ($copy.Success) {
                     $item.ExportStatus = 'Success'
-                    Write-MigrationLog -Message "Export successful: $($item.Category) (robocopy exit code $exitCode)" -Level Success
-
-                    # Export ACLs separately if PreserveACLs is enabled
+                    if ($copy.Failed -gt 0) {
+                        Write-MigrationLog -Message "$($item.Category): $($copy.Failed) file(s) could not be copied (locked or access denied)" -Level Warning
+                    }
                     if ($PreserveACLs) {
                         try {
-                            Export-FileACLs -SourcePath $sourcePath -OutputPath (Join-Path $OutputDirectory "ACLs\$($item.Category).json")
-                            Write-MigrationLog -Message "ACLs exported for $($item.Category)" -Level Success
+                            Export-FileACLs -SourcePath $item.SourcePath -OutputPath (Join-Path (Join-Path $OutputDirectory 'ACLs') "$relative.json")
                         } catch {
                             Write-MigrationLog -Message "ACL export failed for $($item.Category): $($_.Exception.Message)" -Level Warning
                         }
                     }
-                }
-                else {
+                } else {
                     $item.ExportStatus = 'Failed'
-                    $errorLines = ($robocopyOutput | Select-Object -Last 5) -join '; '
-                    Write-MigrationLog -Message "Robocopy failed for $($item.SourcePath) with exit code $exitCode. Output: $errorLines" -Level Error
+                    Write-MigrationLog -Message "Robocopy failed for $($item.SourcePath) with exit code $($copy.ExitCode): $(($copy.Tail | Select-Object -Last 5) -join '; ')" -Level Error
                 }
-            }
-            else {
-                # Single file copy
+            } else {
                 $destDir = Split-Path $destPath -Parent
-                if (-not (Test-Path $destDir)) {
-                    New-Item -Path $destDir -ItemType Directory -Force | Out-Null
-                }
-                Copy-Item -Path $sourcePath -Destination $destPath -Force -ErrorAction Stop
+                New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+                Copy-Item -LiteralPath $item.SourcePath -Destination $destPath -Force -ErrorAction Stop
+                if ($Progress) { $Progress['BytesDone'] = [long]$Progress['BytesDone'] + $sourceItem.Length }
                 $item.ExportStatus = 'Success'
-                Write-MigrationLog -Message "File exported: $sourcePath" -Level Success
             }
-        }
-        catch {
+        } catch {
             $item.ExportStatus = 'Failed'
             Write-MigrationLog -Message "Failed to export $($item.SourcePath): $($_.Exception.Message)" -Level Error
         }
-
-        # Report overall progress
-        $pctComplete = [math]::Round(($currentIndex / $totalCount) * 100, 1)
-        Write-MigrationLog -Message "User data export progress: $pctComplete% ($currentIndex/$totalCount)" -Level Debug
     }
 
     $successCount = @($Items | Where-Object { $_.ExportStatus -eq 'Success' }).Count
     $failCount    = @($Items | Where-Object { $_.ExportStatus -eq 'Failed' }).Count
-    Write-MigrationLog -Message "User profile export complete. Success: $successCount, Failed: $failCount, Skipped: $($totalCount - $successCount - $failCount)" -Level Info
+    Write-MigrationLog -Message "User profile export complete. Success: $successCount, Failed: $failCount" -Level Info
 
     return $Items
 }

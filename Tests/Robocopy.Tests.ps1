@@ -176,3 +176,21 @@ Describe 'ConvertFrom-RobocopySummary' {
         ConvertFrom-RobocopySummary @('ERROR : Invalid Parameter #3') | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Format-TransferRate' {
+    It 'shows progress, rate and remaining time' {
+        $start = [datetime]'2026-10-08T10:00:00Z'
+        $now = $start.AddSeconds(100)
+        Format-TransferRate -BytesDone (1GB) -BytesTotal (4GB) -StartedUtc $start -NowUtc $now |
+            Should -Be ('{0:N1} of {1:N1} GB, {2:N1} MB/s, about 5 min left' -f 1, 4, 10.24)
+    }
+
+    It 'stays empty before any bytes move' {
+        Format-TransferRate -BytesDone 0 -BytesTotal (4GB) -StartedUtc ([datetime]::UtcNow) | Should -BeNullOrEmpty
+    }
+
+    It 'omits the estimate when the total is unknown' {
+        $start = [datetime]'2026-10-08T10:00:00Z'
+        Format-TransferRate -BytesDone (2GB) -BytesTotal 0 -StartedUtc $start -NowUtc $start.AddSeconds(10) | Should -Not -Match 'left'
+    }
+}

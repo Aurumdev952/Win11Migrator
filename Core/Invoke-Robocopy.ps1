@@ -175,6 +175,8 @@ function Invoke-Robocopy {
         Copies a directory tree with tuned Robocopy flags and reports live byte progress.
     .PARAMETER Progress
         Optional synchronized hashtable. BytesDone is incremented as each file finishes.
+    .PARAMETER OnProgress
+        Optional callback run at most once per second while files are being copied.
     .OUTPUTS
         PSCustomObject with ExitCode, Success (exit code below 8), Files, Bytes, Failed, Tail.
     #>
@@ -187,7 +189,8 @@ function Invoke-Robocopy {
         [hashtable]$Exclusions,
         [switch]$Mirror,
         [switch]$CopySecurity,
-        [hashtable]$Progress
+        [hashtable]$Progress,
+        [scriptblock]$OnProgress
     )
 
     $argList = New-RobocopyArgumentList -Source $Source -Destination $Destination -TargetKind $TargetKind `
@@ -195,10 +198,15 @@ function Invoke-Robocopy {
 
     $onLine = $null
     if ($Progress) {
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
         $onLine = {
             param($line)
             $b = Get-RobocopyLineBytes $line
             if ($b -gt 0) { $Progress['BytesDone'] = [long]$Progress['BytesDone'] + $b }
+            if ($OnProgress -and $clock.ElapsedMilliseconds -ge 1000) {
+                $clock.Restart()
+                & $OnProgress
+            }
         }
     }
 
@@ -234,4 +242,33 @@ function Measure-RobocopySource {
     $summary = ConvertFrom-RobocopySummary $run.Tail
     if (-not $summary) { return [PSCustomObject]@{ Bytes = 0L; Files = 0L } }
     return [PSCustomObject]@{ Bytes = $summary.BytesCopied; Files = $summary.FilesCopied }
+}
+
+function Format-TransferRate {
+    <#
+    .SYNOPSIS
+        "1.2 of 4.0 GB, 85.3 MB/s, about 1 min left" for progress displays. Empty until there is a rate.
+    #>
+    param(
+        [long]$BytesDone,
+        [long]$BytesTotal,
+        $StartedUtc,
+        [datetime]$NowUtc = (Get-Date).ToUniversalTime()
+    )
+    if (-not $StartedUtc -or $BytesDone -le 0) { return '' }
+    $elapsed = ($NowUtc - [datetime]$StartedUtc).TotalSeconds
+    if ($elapsed -lt 1) { return '' }
+    $rate = $BytesDone / $elapsed
+    $parts = @()
+    if ($BytesTotal -gt 0) {
+        $parts += '{0:N1} of {1:N1} GB' -f ($BytesDone / 1GB), ($BytesTotal / 1GB)
+    } else {
+        $parts += '{0:N1} GB' -f ($BytesDone / 1GB)
+    }
+    $parts += '{0:N1} MB/s' -f ($rate / 1MB)
+    if ($BytesTotal -gt $BytesDone -and $rate -gt 0) {
+        $minutes = [Math]::Ceiling((($BytesTotal - $BytesDone) / $rate) / 60)
+        $parts += if ($minutes -le 1) { 'about 1 min left' } else { "about $minutes min left" }
+    }
+    return ($parts -join ', ')
 }
