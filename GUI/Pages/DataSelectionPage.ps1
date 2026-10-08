@@ -62,7 +62,8 @@ function Initialize-DataSelectionPage {
     # --- Folder sizing ---
     # Robocopy /L measures each folder with the active exclusions in a background runspace,
     # so the page stays responsive on large profiles. Results land in each item's SizeBytes.
-    if (-not $State.Exclusions) { $State['Exclusions'] = Get-MigrationExclusions -Config $State.Config }
+    if (-not $State.DefaultExclusions) { $State['DefaultExclusions'] = Get-MigrationExclusions -Config $State.Config }
+    if (-not $State.Exclusions) { $State['Exclusions'] = $State.DefaultExclusions }
     $sizeRows = [System.Collections.ArrayList]::new()
     $sizer = [hashtable]::Synchronized(@{ Generation = 0; Jobs = [System.Collections.ArrayList]::new() })
     $startSizing = {
@@ -79,7 +80,9 @@ function Initialize-DataSelectionPage {
             $script:Config = $Config
             foreach ($it in $Items) {
                 if ($Sizer.Generation -ne $Generation) { return }
-                try { $it.SizeBytes = [long](Measure-RobocopySource -Source $it.SourcePath -Exclusions $Exclusions).Bytes } catch { $it.SizeBytes = 0L }
+                $bytes = try { [long](Measure-RobocopySource -Source $it.SourcePath -Exclusions $Exclusions).Bytes } catch { 0L }
+                # A newer run (exclusions changed) owns the result now
+                if ($Sizer.Generation -eq $Generation) { $it.SizeBytes = $bytes }
             }
         }).AddArgument($pendingItems).AddArgument($State.Exclusions).AddArgument($State.MigratorRoot).AddArgument($sizer).AddArgument($sizer.Generation).AddArgument($State.Config)
         $null = $sizer.Jobs.Add(@{ PowerShell = $ps; Handle = $ps.BeginInvoke(); Runspace = $rs })
@@ -372,6 +375,41 @@ function Initialize-DataSelectionPage {
     if ($ui.ChkPower) {
         $ui.ChkPower.Add_Checked({ $State.IncludePower = $true }.GetNewClosure())
         $ui.ChkPower.Add_Unchecked({ $State.IncludePower = $false }.GetNewClosure())
+    }
+
+    # --- Exclusion editor ---
+    # The boxes hold the full list (defaults included) so a default can be removed as well as added
+    $excludeDirsBox = $Page.FindName('txtExcludeDirs')
+    $excludeFilesBox = $Page.FindName('txtExcludeFiles')
+    if ($excludeDirsBox -and $excludeFilesBox) {
+        $showExclusions = {
+            param($ex)
+            $excludeDirsBox.Text = ($ex.Directories -join "`r`n")
+            $excludeFilesBox.Text = ($ex.Files -join "`r`n")
+        }.GetNewClosure()
+        & $showExclusions $State.Exclusions
+
+        $applyExclusions = {
+            param($ex)
+            $State['Exclusions'] = $ex
+            foreach ($row in $sizeRows) { $row.Item.SizeBytes = $null }
+            & $startSizing
+        }.GetNewClosure()
+
+        $btnApply = $Page.FindName('btnApplyExclusions')
+        if ($btnApply) {
+            $btnApply.Add_Click({
+                $split = { param($text) @($text -split "[\r\n,;]+" | ForEach-Object { $_.Trim().TrimEnd('\', '/') } | Where-Object { $_ }) }
+                & $applyExclusions @{ Directories = (& $split $excludeDirsBox.Text); Files = (& $split $excludeFilesBox.Text) }
+            }.GetNewClosure())
+        }
+        $btnReset = $Page.FindName('btnResetExclusions')
+        if ($btnReset) {
+            $btnReset.Add_Click({
+                & $applyExclusions $State.DefaultExclusions
+                & $showExclusions $State.DefaultExclusions
+            }.GetNewClosure())
+        }
     }
 
     # --- Sizes and total, refreshed by the window timer while sizing runs ---
