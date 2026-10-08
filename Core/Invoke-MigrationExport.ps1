@@ -322,6 +322,12 @@ function Invoke-MigrationExportToDestination {
 
     New-Item -Path $Destination.Root -ItemType Directory -Force | Out-Null
 
+    if ($EncryptPassword -and $Destination.Type -eq 'LanReceive') {
+        # The receiving PC restores a package folder as it arrives; the link is already private between two PCs
+        Add-ProgressLog $Progress 'Encryption is skipped for direct PC-to-PC transfer.'
+        $EncryptPassword = $null
+    }
+
     $packagePath = $null
     if ($Resume -and -not $EncryptPassword) {
         $packagePath = Find-ResumablePackage -Root $Destination.Root
@@ -337,7 +343,13 @@ function Invoke-MigrationExportToDestination {
     }
     $Progress['PackagePath'] = $packagePath
 
-    $result = Invoke-MigrationExport -PackagePath $packagePath -Selection $Selection -TargetKind $Destination.TargetKind -Progress $Progress
+    try {
+        $result = Invoke-MigrationExport -PackagePath $packagePath -Selection $Selection -TargetKind $Destination.TargetKind -Progress $Progress
+    } catch {
+        # Tell a waiting receiver the transfer stopped instead of leaving it waiting
+        try { Write-TransferStatus -PackagePath $packagePath -State Failed -Phase ([string]$Progress.Phase) -Errors @($_.Exception.Message) } catch { }
+        throw
+    }
     $errors = [System.Collections.Generic.List[string]]::new()
     foreach ($e in $result.Errors) { $errors.Add($e) }
     $output = $packagePath
