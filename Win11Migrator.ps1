@@ -553,7 +553,7 @@ if ($CLI) {
                 Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
                 exit 1
             } finally {
-                if ($storageTarget) { & net.exe use $storageTarget.Path /delete /y 2>&1 | Out-Null }
+                if ($storageTarget) { Disconnect-ReceiveSession -SharePath $storageTarget.Path }
             }
             $pkgPath = $result.PackagePath
             foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
@@ -598,6 +598,17 @@ if ($CLI) {
             if (-not (Test-Path $PackagePath)) {
                 Write-Host "ERROR: Package path not found: $PackagePath" -ForegroundColor Red
                 exit 1
+            }
+            $encryptedFile = Find-EncryptedPackage -Path $PackagePath
+            if ($encryptedFile) {
+                Write-Host "  Encrypted package: $encryptedFile" -ForegroundColor Cyan
+                $password = Read-Host -Prompt '  Package password' -AsSecureString
+                try {
+                    $PackagePath = Expand-EncryptedPackage -EncryptedFile $encryptedFile -Password $password -OutputRoot $script:Config.PackagePath
+                } catch {
+                    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+                    exit 1
+                }
             }
             $manifestPath = Join-Path $PackagePath "manifest.json"
             if (-not (Test-Path $manifestPath)) {
@@ -677,9 +688,13 @@ if ($CLI) {
                     $state = Get-IncomingPackageState -IncomingPath $session.IncomingPath
                     if ($state.State -ne 'Waiting' -and -not $started) { $started = (Get-Date).ToUniversalTime() }
                     if ($state.ManifestReady -and -not $worker) {
-                        $early = Read-MigrationManifest -ManifestPath (Join-Path $state.PackagePath 'manifest.json')
-                        $worker = Start-AppInstallWorker -Apps $early.Apps -Progress $progress
-                        Write-Host "  Manifest received; installing apps while files arrive" -ForegroundColor Green
+                        try {
+                            $early = Read-MigrationManifest -ManifestPath (Join-Path $state.PackagePath 'manifest.json')
+                            $worker = Start-AppInstallWorker -Apps $early.Apps -Progress $progress
+                            Write-Host "  Manifest received; installing apps while files arrive" -ForegroundColor Green
+                        } catch {
+                            Write-MigrationLog -Message "Manifest not readable yet, retrying: $($_.Exception.Message)" -Level Debug
+                        }
                     }
                     if ($state.State -eq 'Complete') { break }
                     if ($state.State -eq 'Failed' -and $lastPhase -ne 'Failed') {

@@ -214,6 +214,40 @@ function Show-MainWindow {
 
     # Expose navigation to pages via state
     $state['NavigateTo'] = $navigateTo
+
+    # Small modal password prompt; returns a SecureString, or $null when cancelled
+    $state['ReadPasswordDialog'] = {
+        param([string]$Prompt)
+        $dialog = [System.Windows.Window]::new()
+        $dialog.Title = 'Package password'
+        $dialog.SizeToContent = 'WidthAndHeight'
+        $dialog.ResizeMode = 'NoResize'
+        $dialog.WindowStartupLocation = 'CenterOwner'
+        $dialog.Owner = $window
+        $panel = [System.Windows.Controls.StackPanel]::new()
+        $panel.Margin = [System.Windows.Thickness]::new(16)
+        $label = [System.Windows.Controls.TextBlock]::new()
+        $label.Text = $Prompt
+        $label.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
+        $box = [System.Windows.Controls.PasswordBox]::new()
+        $box.Width = 320
+        $buttons = [System.Windows.Controls.StackPanel]::new()
+        $buttons.Orientation = 'Horizontal'
+        $buttons.HorizontalAlignment = 'Right'
+        $buttons.Margin = [System.Windows.Thickness]::new(0, 12, 0, 0)
+        $ok = [System.Windows.Controls.Button]::new()
+        $ok.Content = 'OK'; $ok.Width = 80; $ok.IsDefault = $true
+        $ok.Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
+        $cancel = [System.Windows.Controls.Button]::new()
+        $cancel.Content = 'Cancel'; $cancel.Width = 80; $cancel.IsCancel = $true
+        $cancel.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+        $null = $buttons.Children.Add($ok); $null = $buttons.Children.Add($cancel)
+        $null = $panel.Children.Add($label); $null = $panel.Children.Add($box); $null = $panel.Children.Add($buttons)
+        $dialog.Content = $panel
+        $null = $box.Focus()
+        if ($dialog.ShowDialog() -and $box.SecurePassword.Length -gt 0) { return $box.SecurePassword }
+        return $null
+    }.GetNewClosure()
     $state['LoadPage'] = $loadPage
     $state['BtnNext'] = $btnNext
     $state['BtnBack'] = $btnBack

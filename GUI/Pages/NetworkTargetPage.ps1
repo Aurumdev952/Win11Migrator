@@ -53,7 +53,7 @@ function Initialize-NetworkTargetPage {
         $null = $ps.AddScript({
             param($Root, $Config, $Kind, $Arguments)
             . (Join-Path $Root 'Core\Write-MigrationLog.ps1')
-            foreach ($f in 'Find-NetworkComputers', 'Test-RemoteAccess', 'Register-RemoteRestoreTask') { . (Join-Path $Root "Modules\NetworkTransfer\$f.ps1") }
+            foreach ($f in 'ReceiveProtocol', 'Find-NetworkComputers', 'Test-RemoteAccess', 'Register-RemoteRestoreTask') { . (Join-Path $Root "Modules\NetworkTransfer\$f.ps1") }
             $script:Config = $Config
             if ($Kind -eq 'Scan') { return @(Find-NetworkComputers -TimeoutMs 1000) }
             $test = Test-RemoteAccess -ComputerName $Arguments.ComputerName -Credential $Arguments.Credential -TimeoutMs 5000

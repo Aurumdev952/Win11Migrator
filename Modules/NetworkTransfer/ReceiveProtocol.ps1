@@ -117,3 +117,18 @@ function Get-IncomingPackageState {
         Errors         = if ($status) { @($status.Errors) } else { @() }
     }
 }
+
+function Invoke-NetUse {
+    <#
+    .SYNOPSIS
+        Runs `net use` and returns its exit code and output instead of throwing.
+    .DESCRIPTION
+        Windows PowerShell 5.1 turns a native command's redirected stderr into an error record, which is
+        terminating when the caller runs with ErrorActionPreference Stop (the CLI does). `net use /delete`
+        on a share that is not mapped writes to stderr, so every call goes through here.
+    #>
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    $ErrorActionPreference = 'Continue'
+    $output = & net.exe use @Arguments 2>&1 | ForEach-Object { "$_" }
+    return [PSCustomObject]@{ ExitCode = $LASTEXITCODE; Output = (($output | Out-String).Trim()) }
+}

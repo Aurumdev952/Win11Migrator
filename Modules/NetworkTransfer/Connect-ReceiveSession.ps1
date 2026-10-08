@@ -103,10 +103,10 @@ function Connect-ReceiveSession {
     $user = "$($receiver.Computer)\$($script:ReceiveProtocol.AccountName)"
     $password = ConvertTo-ReceivePassword $code
 
-    & net.exe use $share /delete /y 2>&1 | Out-Null
-    $output = & net.exe use $share $password "/user:$user" /persistent:no 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "The pairing code was not accepted by $($receiver.Computer). Check the code on its screen. ($(($output | Out-String).Trim()))"
+    $null = Invoke-NetUse @($share, '/delete', '/y')
+    $mapped = Invoke-NetUse @($share, $password, "/user:$user", '/persistent:no')
+    if ($mapped.ExitCode -ne 0) {
+        throw "The pairing code was not accepted by $($receiver.Computer). Check the code on its screen. ($($mapped.Output))"
     }
 
     $probe = Join-Path $share ".connect-test-$([guid]::NewGuid().ToString('N'))"
@@ -128,5 +128,5 @@ function Connect-ReceiveSession {
 
 function Disconnect-ReceiveSession {
     param([Parameter(Mandatory)][string]$SharePath)
-    & net.exe use $SharePath /delete /y 2>&1 | Out-Null
+    $null = Invoke-NetUse @($SharePath, '/delete', '/y')
 }

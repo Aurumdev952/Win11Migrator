@@ -162,3 +162,37 @@ function Unprotect-MigrationPackage {
         if ($derivedIv) { [Array]::Clear($derivedIv, 0, $derivedIv.Length) }
     }
 }
+
+function Find-EncryptedPackage {
+    <#
+    .SYNOPSIS
+        The .w11mcrypt file a user pointed at: the file itself, or the newest one in a folder without a manifest.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        if ($Path -like '*.w11mcrypt') { return (Resolve-Path -LiteralPath $Path).ProviderPath }
+        return $null
+    }
+    if (Test-Path -LiteralPath (Join-Path $Path 'manifest.json')) { return $null }
+    $file = Get-ChildItem -LiteralPath $Path -Filter '*.w11mcrypt' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($file) { return $file.FullName }
+    return $null
+}
+
+function Expand-EncryptedPackage {
+    <#
+    .SYNOPSIS
+        Decrypts a .w11mcrypt into OutputRoot\<package name> and returns that folder, ready to import.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$EncryptedFile,
+        [Parameter(Mandatory)][securestring]$Password,
+        [Parameter(Mandatory)][string]$OutputRoot
+    )
+    $target = Join-Path $OutputRoot ([System.IO.Path]::GetFileNameWithoutExtension($EncryptedFile))
+    if (Test-Path -LiteralPath (Join-Path $target 'manifest.json')) { return $target }
+    $result = Unprotect-MigrationPackage -EncryptedFile $EncryptedFile -Password $Password -OutputDirectory $target
+    if (-not $result.Success) { throw "The package could not be decrypted. Check the password." }
+    return $target
+}

@@ -209,6 +209,7 @@ function Invoke-MigrationExport {
     if ($apps.Count -gt 0 -and (Get-Command winget -ErrorAction SilentlyContinue)) {
         # A list a technician can feed to `winget import` if the automated reinstall is not used
         try {
+            $ErrorActionPreference = 'Continue'
             $appsDir = Join-Path $PackagePath 'Apps'
             New-Item -Path $appsDir -ItemType Directory -Force | Out-Null
             & winget export -o (Join-Path $appsDir 'winget-packages.json') --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
@@ -333,9 +334,9 @@ function Invoke-MigrationExportToDestination {
 
     New-Item -Path $Destination.Root -ItemType Directory -Force | Out-Null
 
-    if ($EncryptPassword -and $Destination.Type -eq 'LanReceive') {
-        # The receiving PC restores a package folder as it arrives; the link is already private between two PCs
-        Add-ProgressLog $Progress 'Encryption is skipped for direct PC-to-PC transfer.'
+    if ($EncryptPassword -and $Destination.Type -in 'LanReceive', 'AdminShare') {
+        # Both restore unattended from a package folder: Receive as files arrive, the domain push at sign-in
+        Add-ProgressLog $Progress 'Encryption is skipped for direct PC-to-PC transfer, which restores without a password prompt.'
         $EncryptPassword = $null
     }
 
