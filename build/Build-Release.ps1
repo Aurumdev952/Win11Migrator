@@ -212,6 +212,8 @@ if (-not $SkipMsi) {
     $msi = Join-Path $OutputPath $names.Msi
     & wix build $wxs -arch x64 -o $msi
     if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }
+    # wix writes a debug symbols file beside the MSI; it is not a release artifact
+    Remove-Item (Join-Path $OutputPath '*.wixpdb') -Force -ErrorAction SilentlyContinue
     Invoke-SignFile -Certificate $certificate -Paths $msi
 }
 
