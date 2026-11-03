@@ -513,7 +513,7 @@ function Initialize-DataSelectionPage {
     }
 
     # --- Sizes and total, refreshed by the window timer while sizing runs ---
-    $State.OnTick = {
+    $sizeTick = {
         param($s)
         $total = 0L
         $measuring = $false
@@ -540,6 +540,9 @@ function Initialize-DataSelectionPage {
             }
         }
     }.GetNewClosure()
+    $State.OnTick = $sizeTick
+    # Navigation clears OnTick and this page is cached, so coming Back must hand the timer its handler again
+    $Page.Add_Loaded({ $State.OnTick = $sizeTick }.GetNewClosure())
     & $startSizing
 
     # --- Migration Profile support ---
