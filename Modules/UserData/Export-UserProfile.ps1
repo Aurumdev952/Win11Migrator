@@ -81,11 +81,13 @@ function Export-UserProfile {
             $sourceItem = Get-Item -LiteralPath $item.SourcePath -Force -ErrorAction Stop
             if ($sourceItem.PSIsContainer) {
                 $copy = Invoke-Robocopy -Source $item.SourcePath -Destination $destPath -TargetKind $TargetKind `
-                    -Exclusions $Exclusions -CopySecurity:$PreserveACLs -Progress $Progress -OnProgress $OnProgress
+                    -Exclusions (Get-ItemExclusions -Exclusions $Exclusions -Item $item) -CopySecurity:$PreserveACLs -Progress $Progress -OnProgress $OnProgress
                 if (-not $item.SizeBytes) { $item.SizeBytes = $copy.Bytes }
-                if ($copy.Success) {
+                # Exit codes 8-15 mean some files were not copied but the rest were; 16 means robocopy stopped
+                if ($copy.ExitCode -lt 16) {
                     $item.ExportStatus = 'Success'
                     if ($copy.Failed -gt 0) {
+                        $item.FailedFiles = [int]$copy.Failed
                         Write-MigrationLog -Message "$($item.Category): $($copy.Failed) file(s) could not be copied (locked or access denied)" -Level Warning
                     }
                     if ($PreserveACLs) {

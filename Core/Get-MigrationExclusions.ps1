@@ -78,3 +78,19 @@ function Test-PathExcluded {
     }
     return $false
 }
+
+function Get-ItemExclusions {
+    <#
+    .SYNOPSIS
+        The exclusions for one folder's copy: the shared rules plus the subfolders and files the
+        user unticked inside that folder. Robocopy's /XD and /XF match full paths as well as names.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Exclusions,
+        [Parameter(Mandatory)]$Item
+    )
+    return @{
+        Directories = Merge-PatternList @($Exclusions.Directories, $Item.ExcludedDirs)
+        Files       = Merge-PatternList @($Exclusions.Files, $Item.ExcludedFiles)
+    }
+}

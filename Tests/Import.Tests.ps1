@@ -77,6 +77,14 @@ Describe 'Import-UserProfile' {
         Should -Invoke Invoke-Robocopy -Times 0
     }
 
+    It 'still restores the files that arrived for a folder the export marked failed' {
+        Add-File (P $pkg, 'UserData', 'Documents', 'report.docx')
+        $item = New-DataItem 'Documents' -ExportStatus 'Failed'
+        Import-UserProfile -Items @($item) -PackagePath $pkg -TargetProfilePaths $targets | Out-Null
+        Test-Path (P $userHome, 'Documents', 'report.docx') | Should -BeTrue
+        $item.ImportStatus | Should -Be 'Success'
+    }
+
     It 'marks a folder missing from the package as failed' {
         $item = New-DataItem 'Documents'
         Import-UserProfile -Items @($item) -PackagePath $pkg -TargetProfilePaths $targets | Out-Null
