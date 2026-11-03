@@ -223,6 +223,8 @@ function Invoke-Robocopy {
     return [PSCustomObject]@{
         ExitCode = $run.ExitCode
         Success  = ($run.ExitCode -lt 8)
+        Arguments = ConvertTo-ProcessArgumentString $argList
+        Seen     = if ($summary) { $summary.FilesTotal } else { 0 }
         Files    = if ($summary) { $summary.FilesCopied } else { 0 }
         Bytes    = if ($summary) { $summary.BytesCopied } else { 0 }
         Failed   = if ($summary) { $summary.FilesFailed } else { 0 }
