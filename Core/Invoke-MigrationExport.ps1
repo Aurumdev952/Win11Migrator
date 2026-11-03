@@ -250,7 +250,7 @@ function Invoke-MigrationExport {
                 -Exclusions $exclusions -TargetKind $TargetKind -Progress $Progress `
                 -OnProgress { & $reportStatus } -PreserveACLs:([bool](Get-MigrationSetting $script:Config 'PreserveACLs' $false)) | Out-Null
             foreach ($failed in @($toCopy | Where-Object { $_.ExportStatus -eq 'Failed' })) {
-                $errors.Add("UserData: $($failed.Category) failed to copy")
+                $errors.Add("UserData: $($failed.RelativePath) failed to copy. $($failed.ExportError)".Trim())
             }
             foreach ($partial in @($toCopy | Where-Object { $_.FailedFiles -gt 0 })) {
                 $errors.Add("UserData: $($partial.FailedFiles) file(s) in $($partial.RelativePath) could not be copied (locked or in use). Close the app holding them and run the export again; it copies only what is missing.")

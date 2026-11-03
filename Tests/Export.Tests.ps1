@@ -189,6 +189,18 @@ Describe 'Invoke-MigrationExport' {
         @($result.Errors | Where-Object { $_ -match '2 file\(s\) in Documents could not be copied' }).Count | Should -Be 1
     }
 
+    It 'reports a folder robocopy could not copy at all as failed, with robocopy''s error' {
+        $docs = New-UserFolder $source 'Documents' @('a.txt')
+        Mock Invoke-Robocopy {
+            [PSCustomObject]@{ ExitCode = 8; Success = $false; Files = 0; Bytes = 0L; Failed = 0
+                               Tail = @('2026/11/03 16:56:05 ERROR 5 (0x00000005) Accessing Destination Directory \\pc\share\Documents\', 'Access is denied.') }
+        }
+        $selection = @{ UserData = @(New-Item-Data $docs 'Documents'); SettingsFlags = @{}; IncludeAppData = $false }
+        $result = Invoke-MigrationExport -PackagePath $pkg -Selection $selection
+        $result.UserData[0].ExportStatus | Should -Be 'Failed'
+        @($result.Errors | Where-Object { $_ -match 'Documents failed to copy.*ERROR 5 \(0x00000005\) Accessing Destination' }).Count | Should -Be 1
+    }
+
     It 'marks a folder failed only when robocopy itself stops' {
         $docs = New-UserFolder $source 'Documents' @('a.txt')
         Mock Invoke-Robocopy { [PSCustomObject]@{ ExitCode = 16; Success = $false; Files = 0; Bytes = 0L; Failed = 0; Tail = @('ERROR') } }

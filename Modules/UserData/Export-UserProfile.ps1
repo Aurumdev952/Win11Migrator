@@ -83,8 +83,10 @@ function Export-UserProfile {
                 $copy = Invoke-Robocopy -Source $item.SourcePath -Destination $destPath -TargetKind $TargetKind `
                     -Exclusions (Get-ItemExclusions -Exclusions $Exclusions -Item $item) -CopySecurity:$PreserveACLs -Progress $Progress -OnProgress $OnProgress
                 if (-not $item.SizeBytes) { $item.SizeBytes = $copy.Bytes }
-                # Exit codes 8-15 mean some files were not copied but the rest were; 16 means robocopy stopped
-                if ($copy.ExitCode -lt 16) {
+                Write-MigrationLog -Message "$($relative): robocopy exit code $($copy.ExitCode), $($copy.Files) file(s) and $($copy.Bytes) bytes copied, $($copy.Failed) failed" -Level Info
+                # Exit codes 8-15 with a count of failed files mean only those files were missed. Without
+                # that count robocopy failed on the folder itself (access denied, path not found).
+                if ($copy.ExitCode -lt 8 -or ($copy.ExitCode -lt 16 -and $copy.Failed -gt 0)) {
                     $item.ExportStatus = 'Success'
                     if ($copy.Failed -gt 0) {
                         $item.FailedFiles = [int]$copy.Failed
@@ -99,6 +101,8 @@ function Export-UserProfile {
                     }
                 } else {
                     $item.ExportStatus = 'Failed'
+                    $reason = @($copy.Tail | Where-Object { $_ -match 'ERROR|\(0x[0-9A-Fa-f]{8}\)' } | ForEach-Object { $_.Trim() } | Select-Object -Last 3) -join ' / '
+                    $item.ExportError = if ($reason) { "robocopy exit code $($copy.ExitCode): $reason" } else { "robocopy exit code $($copy.ExitCode): $((@($copy.Tail) | Where-Object { $_.Trim() } | Select-Object -Last 3) -join ' / ')" }
                     Write-MigrationLog -Message "Robocopy failed for $($item.SourcePath) with exit code $($copy.ExitCode): $(($copy.Tail | Select-Object -Last 5) -join '; ')" -Level Error
                 }
             } else {
