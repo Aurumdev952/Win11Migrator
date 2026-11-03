@@ -134,6 +134,8 @@ function Invoke-MigrationImport {
         An install worker already started (Receive mode starts installs while data is still arriving).
     .PARAMETER MoveFromPackage
         Consume the package by renaming folders into place; for packages received over the network.
+    .PARAMETER RestoreRoot
+        Put user data folders under this folder instead of the profile's known folders.
     .PARAMETER Progress
         Synchronized hashtable: Phase, Percent, Item, Log, Succeeded, Failed, BytesTotal, BytesDone,
         AppsTotal, AppsDone, Echo.
@@ -144,7 +146,8 @@ function Invoke-MigrationImport {
         [Parameter(Mandatory)]$Manifest,
         [hashtable]$Progress = [hashtable]::Synchronized(@{ Log = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new()) }),
         [hashtable]$AppWorker,
-        [switch]$MoveFromPackage
+        [switch]$MoveFromPackage,
+        [string]$RestoreRoot
     )
 
     $errors = [System.Collections.Generic.List[string]]::new()
@@ -168,7 +171,7 @@ function Invoke-MigrationImport {
     try {
         $profilePaths = Get-UserProfilePaths
         $targets = @($toRestore | Where-Object { $_.Category -ne 'AppData' } |
-            ForEach-Object { Get-UserDataRestoreTarget -Item $_ -TargetProfilePaths $profilePaths } |
+            ForEach-Object { Get-UserDataRestoreTarget -Item $_ -TargetProfilePaths $profilePaths -RestoreRoot $RestoreRoot } |
             Where-Object { Test-Path -LiteralPath $_ } | Sort-Object -Unique)
         $snapshotPath = Join-Path $workPath 'RollbackSnapshot'
         $snap = New-RollbackSnapshot -SnapshotPath $snapshotPath -UserDataPaths $targets -RegistryPaths @(
@@ -215,7 +218,7 @@ function Invoke-MigrationImport {
     $worker = if ($AppWorker) { $AppWorker } else { Start-AppInstallWorker -Apps $Manifest.Apps -Progress $Progress }
 
     try {
-        Import-UserProfile -Items $userData -PackagePath $PackagePath -MoveFromPackage:$MoveFromPackage -Progress $Progress `
+        Import-UserProfile -Items $userData -PackagePath $PackagePath -MoveFromPackage:$MoveFromPackage -RestoreRoot $RestoreRoot -Progress $Progress `
             -TargetProfilePaths $profilePaths -PreserveACLs:([bool](Get-MigrationSetting $script:Config 'PreserveACLs' $false)) | Out-Null
         Import-AppDataSettings -Items $userData -PackagePath $PackagePath -MoveFromPackage:$MoveFromPackage -Progress $Progress | Out-Null
     } catch {

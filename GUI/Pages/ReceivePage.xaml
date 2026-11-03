@@ -20,6 +20,26 @@
                        Style="{StaticResource BodyText}" Foreground="{StaticResource TextSecondaryBrush}"
                        TextWrapping="Wrap" Margin="0,0,0,24" />
 
+            <Border x:Name="panelRestoreTo" Style="{StaticResource CardPanel}" Padding="16" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Text="Save received files to" Style="{StaticResource BodyText}" FontWeight="SemiBold" Margin="0,0,0,6" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="txtRestoreTo" Grid.Column="0" FontSize="13" Padding="6,4" VerticalContentAlignment="Center" />
+                        <Button x:Name="btnBrowseRestoreTo" Grid.Column="1" Content="Browse..." Margin="8,0,0,0"
+                                Style="{StaticResource SecondaryButton}" Padding="12,5" FontSize="12" />
+                        <Button x:Name="btnStartReceive" Grid.Column="2" Content="Start receiving" Margin="8,0,0,0"
+                                Style="{StaticResource PrimaryButton}" Padding="14,5" FontSize="12" />
+                    </Grid>
+                    <TextBlock x:Name="txtRestoreToHint" Text="" Style="{StaticResource CaptionText}"
+                               Foreground="{StaticResource TextSecondaryBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                </StackPanel>
+            </Border>
+
             <Border Style="{StaticResource CardPanel}" Padding="24" Margin="0,0,0,24">
                 <StackPanel HorizontalAlignment="Center">
                     <TextBlock Text="Pairing code" Style="{StaticResource CaptionText}" HorizontalAlignment="Center" />

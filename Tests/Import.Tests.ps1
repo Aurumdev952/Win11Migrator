@@ -94,6 +94,19 @@ Describe 'Import-UserProfile' {
         $item.ImportStatus | Should -Be 'Success'
     }
 
+    It 'puts every folder under the chosen location instead of the profile when one is given' {
+        $chosen = New-TempDir
+        Add-File (P $pkg, 'UserData', 'Documents', 'report.docx')
+        Add-File (P $pkg, 'UserData', 'Projects', 'main.py')
+        $docs = New-DataItem 'Documents'
+        $custom = New-DataItem 'Custom' 'Projects'
+        Import-UserProfile -Items @($docs, $custom) -PackagePath $pkg -TargetProfilePaths $targets -RestoreRoot $chosen -MoveFromPackage | Out-Null
+        Test-Path (P $chosen, 'Documents', 'report.docx') | Should -BeTrue
+        Test-Path (P $chosen, 'Projects', 'main.py') | Should -BeTrue
+        Test-Path (P $userHome, 'Documents') | Should -BeFalse
+        $docs.ImportStatus | Should -Be 'Success'
+    }
+
     It 'merges into folders that already exist and hands real conflicts to robocopy' {
         Add-File (P $userHome, 'Documents', 'shared', 'old.txt')
         Add-File (P $userHome, 'Documents', 'same.txt') 'target version'

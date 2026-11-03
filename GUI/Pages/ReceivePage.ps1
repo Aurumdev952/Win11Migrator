@@ -30,6 +30,10 @@ function Initialize-ReceivePage {
         Progress = $Page.FindName('progressReceive')
         Rate     = $Page.FindName('txtReceiveRate')
         Apps     = $Page.FindName('txtReceiveApps')
+        RestoreTo = $Page.FindName('txtRestoreTo')
+        RestoreHint = $Page.FindName('txtRestoreToHint')
+        Browse   = $Page.FindName('btnBrowseRestoreTo')
+        Start    = $Page.FindName('btnStartReceive')
         Started  = $null
     }
     $ui = $State.ReceiveUi
@@ -38,22 +42,83 @@ function Initialize-ReceivePage {
 
     if (-not (Test-AdminPrivilege)) {
         $ui.Status.Text = "Receiving needs administrator rights to open a temporary network share. Close this window and start Win11Migrator with 'Run as administrator'."
+        $ui.Start.IsEnabled = $false
         return
     }
 
-    try {
-        $session = Start-ReceiveSession
-    } catch {
-        $ui.Status.Text = "This PC could not be prepared to receive: $($_.Exception.Message)"
-        return
-    }
-    $State['ReceiveSession'] = $session
-    $ui.Code.Text = $session.Code
-    $addresses = if ($session.Addresses) { $session.Addresses -join ', ' } else { 'no network address found' }
-    $ui.Identity.Text = "This PC: $($session.Computer)   |   $addresses"
-    $ui.Status.Text = "Waiting for the other PC to connect..."
+    # Suggest the roomiest fixed drive other than Windows', so a small system partition is not filled
+    $systemRoot = [System.IO.Path]::GetPathRoot($env:SystemRoot)
+    $dataDrive = [System.IO.DriveInfo]::GetDrives() |
+        Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady -and $_.Name -ne $systemRoot } |
+        Sort-Object AvailableFreeSpace -Descending | Select-Object -First 1
+    $ui.RestoreTo.Text = if ($dataDrive) { Join-Path $dataDrive.Name 'MigratedFiles' } else { '' }
 
-    $State.OnTick = {
+    $State['UpdateRestoreHint'] = {
+        param($s)
+        $ui = $s.ReceiveUi
+        $path = $ui.RestoreTo.Text.Trim()
+        if (-not $path) {
+            $ui.RestoreHint.Text = "Empty: files go into your user folders (Documents, Desktop, ...) in $env:USERPROFILE."
+            return
+        }
+        if ($path -notmatch '^[A-Za-z]:\\') {
+            $ui.RestoreHint.Text = 'Use a folder on a local drive, for example D:\MigratedFiles.'
+            return
+        }
+        try {
+            $free = ([System.IO.DriveInfo]::new($path.Substring(0, 1))).AvailableFreeSpace
+            $ui.RestoreHint.Text = ('Documents, Desktop and the other folders will be saved under {0} ({1:N0} GB free on {2}:).' -f $path, ($free / 1GB), $path.Substring(0, 1).ToUpper())
+        } catch {
+            $ui.RestoreHint.Text = "Drive $($path.Substring(0, 2)) was not found."
+        }
+    }
+    & $State.UpdateRestoreHint $State
+    $ui.RestoreTo.Add_TextChanged({ & $State.UpdateRestoreHint $State }.GetNewClosure())
+
+    $ui.Browse.Add_Click({
+        $dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
+        $dialog.Description = 'Choose where the received files are saved'
+        $dialog.ShowNewFolderButton = $true
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $State.ReceiveUi.RestoreTo.Text = $dialog.SelectedPath }
+    }.GetNewClosure())
+
+    $State['StartReceiving'] = {
+        param($s)
+        $ui = $s.ReceiveUi
+        $restoreRoot = $ui.RestoreTo.Text.Trim()
+        if ($restoreRoot) {
+            if ($restoreRoot -notmatch '^[A-Za-z]:\\') {
+                $ui.Status.Text = 'Choose a folder on a local drive, for example D:\MigratedFiles.'
+                return
+            }
+            try {
+                New-Item -Path $restoreRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null
+            } catch {
+                $ui.Status.Text = "Could not use $($restoreRoot): $($_.Exception.Message)"
+                return
+            }
+        }
+        try {
+            $session = Start-ReceiveSession -RestoreRoot $restoreRoot
+        } catch {
+            $ui.Status.Text = "This PC could not be prepared to receive: $($_.Exception.Message)"
+            return
+        }
+        $s['RestoreRoot'] = $restoreRoot
+        $s['ReceiveSession'] = $session
+        $ui.RestoreTo.IsEnabled = $false
+        $ui.Browse.IsEnabled = $false
+        $ui.Start.IsEnabled = $false
+        $ui.Code.Text = $session.Code
+        $addresses = if ($session.Addresses) { $session.Addresses -join ', ' } else { 'no network address found' }
+        $ui.Identity.Text = "This PC: $($session.Computer)   |   $addresses"
+        $ui.Status.Text = "Waiting for the other PC to connect..."
+        $s.OnTick = $s.ReceiveTick
+    }
+    $ui.Start.Add_Click({ & $State.StartReceiving $State }.GetNewClosure())
+    $ui.Status.Text = 'Choose where to save the files, then click Start receiving.'
+
+    $State['ReceiveTick'] = {
         param($s)
         $ui = $s.ReceiveUi
         $session = $s.ReceiveSession

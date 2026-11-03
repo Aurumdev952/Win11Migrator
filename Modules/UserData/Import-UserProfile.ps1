@@ -36,14 +36,16 @@
 function Get-UserDataRestoreTarget {
     <#
     .SYNOPSIS
-        Where an exported folder belongs on this PC: the known folder for standard categories
-        (which honours OneDrive redirection), otherwise %USERPROFILE%\<RelativePath>.
+        Where an exported folder belongs on this PC: RestoreRoot\<RelativePath> when the user chose a
+        location, else the known folder for standard categories (which honours OneDrive redirection),
+        otherwise %USERPROFILE%\<RelativePath>.
     #>
-    param([Parameter(Mandatory)]$Item, [Parameter(Mandatory)][hashtable]$TargetProfilePaths)
+    param([Parameter(Mandatory)]$Item, [Parameter(Mandatory)][hashtable]$TargetProfilePaths, [string]$RestoreRoot)
+    $relative = if ($Item.RelativePath) { $Item.RelativePath } else { $Item.Category }
+    if ($RestoreRoot) { return Join-Path $RestoreRoot $relative }
     if ($Item.Category -and $Item.Category -ne 'Custom' -and $TargetProfilePaths.ContainsKey($Item.Category)) {
         return $TargetProfilePaths[$Item.Category]
     }
-    $relative = if ($Item.RelativePath) { $Item.RelativePath } else { $Item.Category }
     return Join-Path $env:USERPROFILE $relative
 }
 
@@ -60,6 +62,8 @@ function Import-UserProfile {
         [hashtable]$TargetProfilePaths,
 
         [switch]$MoveFromPackage,
+
+        [string]$RestoreRoot,
 
         [hashtable]$Progress,
 
@@ -90,7 +94,7 @@ function Import-UserProfile {
             continue
         }
 
-        $targetPath = Get-UserDataRestoreTarget -Item $item -TargetProfilePaths $TargetProfilePaths
+        $targetPath = Get-UserDataRestoreTarget -Item $item -TargetProfilePaths $TargetProfilePaths -RestoreRoot $RestoreRoot
 
         try {
             if (Test-Path -LiteralPath $packageSourcePath -PathType Container) {
