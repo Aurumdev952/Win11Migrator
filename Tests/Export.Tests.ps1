@@ -201,6 +201,26 @@ Describe 'Invoke-MigrationExport' {
         @($result.Errors | Where-Object { $_ -match 'Documents failed to copy.*ERROR 5 \(0x00000005\) Accessing Destination' }).Count | Should -Be 1
     }
 
+    It 'reports a folder as failed when robocopy finds nothing to copy in a folder that measured data' {
+        $docs = New-UserFolder $source 'Downloads' @('a.txt')
+        Mock Invoke-Robocopy {
+            [PSCustomObject]@{ ExitCode = 0; Success = $true; Arguments = 'src dst /E'; Seen = 0; Files = 0; Bytes = 0L; Failed = 0
+                               Tail = @('               Total    Copied   Skipped  Mismatch    FAILED    Extras', '    Files :         0         0         0         0         0         0') }
+        }
+        $item = New-Item-Data $docs 'Downloads'; $item.SizeBytes = 80GB
+        $result = Invoke-MigrationExport -PackagePath $pkg -Selection @{ UserData = @($item); SettingsFlags = @{}; IncludeAppData = $false }
+        $result.UserData[0].ExportStatus | Should -Be 'Failed'
+        @($result.Errors | Where-Object { $_ -match 'Downloads failed to copy.*found no files to copy although the folder measured 80 GB' }).Count | Should -Be 1
+    }
+
+    It 'still counts a resumed folder whose files are all already there as copied' {
+        $docs = New-UserFolder $source 'Downloads' @('a.txt')
+        Mock Invoke-Robocopy { [PSCustomObject]@{ ExitCode = 0; Success = $true; Arguments = ''; Seen = 120; Files = 0; Bytes = 0L; Failed = 0; Tail = @() } }
+        $item = New-Item-Data $docs 'Downloads'; $item.SizeBytes = 5GB
+        $result = Invoke-MigrationExport -PackagePath $pkg -Selection @{ UserData = @($item); SettingsFlags = @{}; IncludeAppData = $false }
+        $result.UserData[0].ExportStatus | Should -Be 'Success'
+    }
+
     It 'marks a folder failed only when robocopy itself stops' {
         $docs = New-UserFolder $source 'Documents' @('a.txt')
         Mock Invoke-Robocopy { [PSCustomObject]@{ ExitCode = 16; Success = $false; Files = 0; Bytes = 0L; Failed = 0; Tail = @('ERROR') } }
