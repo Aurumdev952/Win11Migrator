@@ -92,6 +92,22 @@ Describe 'Resolve-ExportDestination' {
     }
 }
 
+Describe 'Get-SelectedCopyBytes' {
+    It 'totals selected folders from the GUI scan, which are hashtables, skipping cloud-synced ones' {
+        $items = @(
+            @{ Name = 'Documents'; Selected = $true; SkipCloudSync = $false; SizeBytes = 300L }
+            @{ Name = 'Desktop'; Selected = $true; SkipCloudSync = $true; SizeBytes = 50L }
+            @{ Name = 'Videos'; Selected = $false; SkipCloudSync = $false; SizeBytes = 900L }
+        )
+        Get-SelectedCopyBytes -UserData $items | Should -Be 300
+    }
+
+    It 'totals UserDataItem objects from the CLI the same way' {
+        $item = [UserDataItem]::new(); $item.Selected = $true; $item.SizeBytes = 42
+        Get-SelectedCopyBytes -UserData @($item) | Should -Be 42
+    }
+}
+
 Describe 'Invoke-MigrationExport' {
     BeforeEach {
         $script:Config = @{ PackagePath = (New-TempDir); AppDataInclude = @() }

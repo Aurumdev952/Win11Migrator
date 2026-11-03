@@ -455,7 +455,7 @@ function Initialize-ScanProgressPage {
                     } catch {}
 
                     $s.SystemSettings = $settings
-                    $totalItems = ($settings | Measure-Object -Property Count -Sum).Sum
+                    $totalItems = ($settings | ForEach-Object { [int]$_.Count } | Measure-Object -Sum).Sum
                     $ui.CountSettings.Text = "$totalItems items"
                     $ui.IconSettings.Text = [char]0x25CF
                     $ui.IconSettings.Foreground = [System.Windows.Media.Brushes]::Green

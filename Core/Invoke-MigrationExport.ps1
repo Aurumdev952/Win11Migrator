@@ -90,6 +90,16 @@ function Find-ResumablePackage {
     return $null
 }
 
+function Get-SelectedCopyBytes {
+    # The GUI scan yields hashtables, which Windows PowerShell 5.1's Measure-Object -Property cannot read
+    param([object[]]$UserData)
+    $total = 0L
+    foreach ($item in @($UserData)) {
+        if ($item -and $item.Selected -and -not $item.SkipCloudSync) { $total += [long]$item.SizeBytes }
+    }
+    return $total
+}
+
 function ConvertTo-UserDataItem {
     # The GUI scan produces hashtables; the CLI produces UserDataItem objects.
     param([Parameter(Mandatory)]$InputObject)
