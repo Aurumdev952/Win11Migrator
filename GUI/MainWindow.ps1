@@ -258,7 +258,10 @@ function Show-MainWindow {
         param([string]$Mode, [hashtable]$State)
         $State.Mode = $Mode
         $State.Pages = switch ($Mode) {
-            'Export'  { $State.ExportPages }
+            'Export'  {
+                if ($State.Config['MigrateApps'] -eq $false) { @($State.ExportPages | Where-Object { $_ -ne 'AppSelectionPage' }) }
+                else { $State.ExportPages }
+            }
             'Receive' { $State.ReceivePages }
             default   { $State.ImportPages }
         }

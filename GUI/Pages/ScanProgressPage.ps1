@@ -51,6 +51,7 @@ function Initialize-ScanProgressPage {
     }
 
     $State.BtnNext.IsEnabled = $false
+    $migrateApps = $State.Config['MigrateApps'] -ne $false
     $scanCtx = @{
         Phase         = -1
         AppJob        = $null
@@ -82,6 +83,18 @@ function Initialize-ScanProgressPage {
         switch ($scanCtx.Phase) {
             # ---- Phase 0: Launch background registry scan ----
             0 {
+                if (-not $migrateApps) {
+                    $s.Apps = @()
+                    $s.AppProfiles = @()
+                    foreach ($row in @(@($ui.IconApps, $ui.CountApps), @($ui.IconAppProfiles, $ui.CountAppProfiles), @($ui.IconInstall, $ui.CountInstall))) {
+                        $row[0].Text = [char]0x25CB
+                        $row[0].Foreground = [System.Windows.Media.Brushes]::Gray
+                        $row[1].Text = 'Skipped (files only)'
+                    }
+                    if ($ui.Log) { $ui.Log.AppendText("Application transfer is turned off. Scanning files and settings only.`r`n") }
+                    $scanCtx.Phase = 2
+                    return
+                }
                 Write-Host "[SCAN] Phase 0: Launching background registry scan" -ForegroundColor Cyan
                 $ui.IconApps.Text = [char]0x25BA
                 $ui.IconApps.Foreground = [System.Windows.Media.Brushes]::DodgerBlue
@@ -460,6 +473,21 @@ function Initialize-ScanProgressPage {
 
             # ---- Phase 75: Application Profile detection ----
             75 {
+                if (-not $migrateApps) {
+                    if ($ui.Log) {
+                        $ui.Log.AppendText("`r`nScan complete! Click Next to continue.`r`n")
+                        $ui.Log.ScrollToEnd()
+                    }
+                    $ui.Progress.Value = 100
+                    $ui.Percent.Text = "100%"
+                    $ui.Title.Text = "Scan Complete"
+                    $ui.Status.Text = "Review the results below, then click Next to continue."
+                    $s.BtnNext.IsEnabled = $true
+                    $scanCtx.Phase = -1
+                    $s.ActiveJob = $null
+                    $s.OnTick = $null
+                    return
+                }
                 Write-Host "[SCAN] Phase 75: Application profiles" -ForegroundColor Cyan
                 $ui.IconAppProfiles.Text = [char]0x25BA
                 $ui.IconAppProfiles.Foreground = [System.Windows.Media.Brushes]::DodgerBlue

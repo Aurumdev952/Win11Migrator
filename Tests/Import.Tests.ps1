@@ -153,6 +153,21 @@ Describe 'Get-ImportWorkPath' {
     }
 }
 
+Describe 'Get-AppsToInstall' {
+    BeforeAll {
+        $manual = [MigrationApp]::new(); $manual.Name = 'Legacy Tool'; $manual.InstallMethod = 'Manual'; $manual.Selected = $true
+        $chrome = [MigrationApp]::new(); $chrome.Name = 'Chrome'; $chrome.InstallMethod = 'Winget'; $chrome.Selected = $true
+    }
+
+    It 'installs automatable apps by default' {
+        @(Get-AppsToInstall @($manual, $chrome) @{}).Name | Should -Be @('Chrome')
+    }
+
+    It 'installs nothing when MigrateApps is off, even from a package that lists apps' {
+        @(Get-AppsToInstall @($manual, $chrome) @{ MigrateApps = $false }).Count | Should -Be 0
+    }
+}
+
 Describe 'Invoke-MigrationImport' {
     BeforeEach {
         $pkg = New-TempDir

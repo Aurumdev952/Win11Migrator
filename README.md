@@ -280,6 +280,7 @@ All settings are in **`Config/AppSettings.json`**:
   "ExcludeFilePatterns": ["*.tmp", "~$*", "Thumbs.db", "desktop.ini", "*.log", "*.pyc"],
   "ExcludeDirectories": ["node_modules", ".venv", "__pycache__", "..."],
   "MaxFileSizeMB": 4096,
+  "MigrateApps": false,
   "EnableWinget": true,
   "EnableChocolatey": true,
   "EnableNinite": true,
@@ -307,6 +308,7 @@ All settings are in **`Config/AppSettings.json`**:
 | `ExcludeFilePatterns` | 6 patterns | File patterns excluded from every copy (`/XF`) |
 | `ExcludeDirectories` | 17 names | Folder names excluded anywhere in the selected folders (`/XD`) |
 | `MaxFileSizeMB` | `4096` | Skip individual files larger than this |
+| `MigrateApps` | `false` | Discover, export and reinstall applications and their profiles. When `false`, the scan skips apps, the app selection page is hidden, and imports install nothing, even from a package that lists apps |
 | `Enable*` | all `true` | Toggle individual install methods on/off |
 | `SilentInstallTimeout` | `600` | Seconds before killing a hung installer process |
 | `BrowserProfiles.*` | all `true` | Toggle individual browser scanning |
