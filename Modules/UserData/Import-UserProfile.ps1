@@ -79,7 +79,7 @@ function Import-UserProfile {
 
     foreach ($item in $Items) {
         if ($item.Category -eq 'AppData') { continue }
-        if (-not $item.Selected -or $item.ExportStatus -in 'Skipped', 'Failed') {
+        if (-not $item.Selected -or $item.ExportStatus -eq 'Skipped') {
             $item.ImportStatus = 'Skipped'
             continue
         }

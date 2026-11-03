@@ -196,7 +196,9 @@ OneDrive Known Folder Move redirection is detected automatically through the reg
 
 ### Exclusions
 
-Folders that can be rebuilt are skipped by name, anywhere inside the selected folders: `node_modules`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.gradle`, `.next`, `.nuxt`, `.parcel-cache`, `.turbo`, `bower_components`, `.terraform`, `$RECYCLE.BIN` and `System Volume Information`. Files matching `*.tmp`, `~$*`, `Thumbs.db`, `desktop.ini`, `*.log` and `*.pyc` are skipped too, as are files larger than `MaxFileSizeMB`.
+Folders that can be rebuilt are skipped by name, anywhere inside the selected folders: `node_modules`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.gradle`, `.next`, `.nuxt`, `.parcel-cache`, `.turbo`, `bower_components`, `.terraform`, `$RECYCLE.BIN` and `System Volume Information`. Files matching `*.tmp`, `~$*`, `Thumbs.db`, `desktop.ini`, `*.log` and `*.pyc` are skipped too, as are files larger than `MaxFileSizeMB` when it is set (it is `0`, no limit, by default).
+
+On **Data Selection**, the arrow next to a folder expands it. Untick any subfolder or file to leave it out; subfolders expand the same way, one level at a time. The unticked paths apply to that folder only, and the size shown is re-measured without them.
 
 - Change the defaults in `Config\AppSettings.json` (`ExcludeDirectories`, `ExcludeFilePatterns`).
 - A migration profile can add to them with an `Exclusions` block; the Developer profile adds `target`, `.angular`, `.svelte-kit`, `.dart_tool`, `.expo` and `DerivedData`.
@@ -282,7 +284,7 @@ All settings are in **`Config/AppSettings.json`**:
   "AppDataInclude": ["Microsoft\\Sticky Notes", "Microsoft\\Windows\\Themes", "Microsoft\\Credentials"],
   "ExcludeFilePatterns": ["*.tmp", "~$*", "Thumbs.db", "desktop.ini", "*.log", "*.pyc"],
   "ExcludeDirectories": ["node_modules", ".venv", "__pycache__", "..."],
-  "MaxFileSizeMB": 4096,
+  "MaxFileSizeMB": 0,
   "MigrateApps": false,
   "DefaultSelection": { "BrowserProfiles": false, "SystemSettings": false, "AppData": false },
   "EnableWinget": true,
@@ -311,7 +313,7 @@ All settings are in **`Config/AppSettings.json`**:
 | `AppDataInclude` | 3 folders | Which `%APPDATA%` / `%LOCALAPPDATA%` subfolders to include |
 | `ExcludeFilePatterns` | 6 patterns | File patterns excluded from every copy (`/XF`) |
 | `ExcludeDirectories` | 17 names | Folder names excluded anywhere in the selected folders (`/XD`) |
-| `MaxFileSizeMB` | `4096` | Skip individual files larger than this |
+| `MaxFileSizeMB` | `0` | Skip individual files larger than this; `0` copies files of any size |
 | `MigrateApps` | `false` | Discover, export and reinstall applications and their profiles. When `false`, the scan skips apps, the app selection page is hidden, and imports install nothing, even from a package that lists apps |
 | `DefaultSelection.*` | all `false` | Whether browser profiles, system settings and AppData start selected. All `false` means an export carries files only; each can still be ticked on the Data Selection page. USMT is also off (`USMT.Enabled`) because it migrates settings |
 | `Enable*` | all `true` | Toggle individual install methods on/off |

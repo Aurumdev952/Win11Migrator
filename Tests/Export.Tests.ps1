@@ -159,6 +159,44 @@ Describe 'Invoke-MigrationExport' {
         $result.UserData[0].ExportStatus | Should -Be 'Success'
     }
 
+    It 'leaves out the subfolders and files unticked inside a folder, and only for that folder' {
+        $docs = New-UserFolder $source 'Documents' @('keep.txt', 'skip.txt', (Join-Path 'Old' 'a.txt'))
+        $pics = New-UserFolder $source 'Pictures' @('p.jpg')
+        $oldDir = Join-Path $docs 'Old'
+        $skipFile = Join-Path $docs 'skip.txt'
+        $gui = @{ Name = 'Documents'; SourcePath = $docs; Selected = $true; SizeBytes = 1L
+                  ExcludedDirs = [System.Collections.ArrayList]@($oldDir); ExcludedFiles = [System.Collections.ArrayList]@($skipFile) }
+        $selection = @{ UserData = @($gui, (New-Item-Data $pics 'Pictures')); SettingsFlags = @{}; IncludeAppData = $false
+                        Exclusions = @{ Directories = @('node_modules'); Files = @('*.tmp') } }
+        Invoke-MigrationExport -PackagePath $pkg -Selection $selection | Out-Null
+        $docsCall = $script:robocopyCalls | Where-Object { $_.Source -eq $docs }
+        $picsCall = $script:robocopyCalls | Where-Object { $_.Source -eq $pics }
+        $docsCall.Exclusions.Directories | Should -Be @('node_modules', $oldDir)
+        $docsCall.Exclusions.Files | Should -Be @('*.tmp', $skipFile)
+        $picsCall.Exclusions.Directories | Should -Be @('node_modules')
+        $picsCall.Exclusions.Files | Should -Be @('*.tmp')
+    }
+
+    It 'keeps a folder when a few files in it are locked, and says how many were missed' {
+        $docs = New-UserFolder $source 'Documents' @('a.txt')
+        Mock Invoke-Robocopy {
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+            [PSCustomObject]@{ ExitCode = 9; Success = $false; Files = 10; Bytes = 100L; Failed = 2; Tail = @() }
+        }
+        $selection = @{ UserData = @(New-Item-Data $docs 'Documents'); SettingsFlags = @{}; IncludeAppData = $false }
+        $result = Invoke-MigrationExport -PackagePath $pkg -Selection $selection
+        $result.UserData[0].ExportStatus | Should -Be 'Success'
+        @($result.Errors | Where-Object { $_ -match '2 file\(s\) in Documents could not be copied' }).Count | Should -Be 1
+    }
+
+    It 'marks a folder failed only when robocopy itself stops' {
+        $docs = New-UserFolder $source 'Documents' @('a.txt')
+        Mock Invoke-Robocopy { [PSCustomObject]@{ ExitCode = 16; Success = $false; Files = 0; Bytes = 0L; Failed = 0; Tail = @('ERROR') } }
+        $selection = @{ UserData = @(New-Item-Data $docs 'Documents'); SettingsFlags = @{}; IncludeAppData = $false }
+        $result = Invoke-MigrationExport -PackagePath $pkg -Selection $selection
+        $result.UserData[0].ExportStatus | Should -Be 'Failed'
+    }
+
     It 'leaves cloud-synced folders to the sync client' {
         $docs = New-UserFolder $source 'Documents' @('a.txt')
         $selection = @{ UserData = @(New-Item-Data $docs 'Documents' -Cloud); SettingsFlags = @{}; IncludeAppData = $false }

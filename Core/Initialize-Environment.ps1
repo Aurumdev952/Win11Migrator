@@ -47,6 +47,9 @@ class UserDataItem {
     [bool]$IsCloudSynced = $false
     [string]$CloudProvider       # OneDrive, GoogleDrive, or empty
     [bool]$SkipCloudSync = $false  # True = user chose to let cloud re-sync instead of copying
+    [string[]]$ExcludedDirs = @()  # Full paths the user unticked inside this folder
+    [string[]]$ExcludedFiles = @()
+    [int]$FailedFiles = 0          # Files robocopy could not copy (locked, in use, access denied)
     [string]$ExportStatus        # Pending, Success, Failed, Skipped
     [string]$ImportStatus        # Pending, Success, Failed, Skipped
 }

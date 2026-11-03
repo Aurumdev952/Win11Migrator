@@ -155,7 +155,7 @@ function Invoke-MigrationImport {
     $failed = 0
     $workPath = Get-ImportWorkPath -PackagePath $PackagePath
     $userData = @($Manifest.UserData)
-    $toRestore = @($userData | Where-Object { $_.Selected -and $_.ExportStatus -notin 'Skipped', 'Failed' })
+    $toRestore = @($userData | Where-Object { $_.Selected -and $_.ExportStatus -ne 'Skipped' })
     $Progress['BytesTotal'] = [long](($toRestore | Measure-Object -Property SizeBytes -Sum).Sum)
     $Progress['BytesDone'] = 0L
     $Progress['StartedUtc'] = (Get-Date).ToUniversalTime()

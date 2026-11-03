@@ -68,7 +68,16 @@ function Write-TransferStatus {
     $final = Join-Path $PackagePath 'transfer.json'
     $temp = "$final.tmp"
     $status | ConvertTo-Json | Set-Content -Path $temp -Encoding UTF8
-    Move-Item -Path $temp -Destination $final -Force
+    # The receiving PC reads this file every half second; replacing it fails while a read holds it open
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            Move-Item -Path $temp -Destination $final -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -ge 20) { throw }
+            Start-Sleep -Milliseconds 250
+        }
+    }
 }
 
 function Find-ResumablePackage {
@@ -114,6 +123,8 @@ function ConvertTo-UserDataItem {
     $item.CloudProvider = if ($InputObject.CloudProvider) { $InputObject.CloudProvider } else { '' }
     $item.SkipCloudSync = [bool]$InputObject.SkipCloudSync
     $item.SizeBytes     = [long]$InputObject.SizeBytes
+    $item.ExcludedDirs  = @($InputObject.ExcludedDirs | Where-Object { $_ })
+    $item.ExcludedFiles = @($InputObject.ExcludedFiles | Where-Object { $_ })
     if ($item.IsCustom) { $item.Category = 'Custom' }
     return $item
 }
@@ -240,6 +251,9 @@ function Invoke-MigrationExport {
                 -OnProgress { & $reportStatus } -PreserveACLs:([bool](Get-MigrationSetting $script:Config 'PreserveACLs' $false)) | Out-Null
             foreach ($failed in @($toCopy | Where-Object { $_.ExportStatus -eq 'Failed' })) {
                 $errors.Add("UserData: $($failed.Category) failed to copy")
+            }
+            foreach ($partial in @($toCopy | Where-Object { $_.FailedFiles -gt 0 })) {
+                $errors.Add("UserData: $($partial.FailedFiles) file(s) in $($partial.RelativePath) could not be copied (locked or in use). Close the app holding them and run the export again; it copies only what is missing.")
             }
             Add-ProgressLog $Progress "  Copied $(@($toCopy | Where-Object { $_.ExportStatus -eq 'Success' }).Count) of $($toCopy.Count) folders"
         } catch {
