@@ -149,6 +149,50 @@ Describe 'UDP discovery' {
     }
 }
 
+Describe 'Start-ReceiveSession' {
+    BeforeAll {
+        # Stand-ins for the Windows-only cmdlets, carrying the parameter limits Windows enforces
+        function New-LocalUser {
+            param([ValidateLength(1, 20)][string]$Name, [securestring]$Password, [ValidateLength(0, 48)][string]$Description,
+                  [switch]$AccountNeverExpires, [switch]$PasswordNeverExpires, [switch]$UserMayNotChangePassword)
+        }
+        function New-SmbShare { param([ValidateLength(1, 80)][string]$Name, [string]$Path, [string[]]$FullAccess, [ValidateLength(0, 256)][string]$Description) }
+        function New-NetFirewallRule { param([string]$Name, [string]$DisplayName, [string]$Direction, [string]$Protocol, $LocalPort, [string]$Action, [string]$Profile) }
+        function Get-Acl { param([string]$LiteralPath) }
+        function Set-Acl { param([string]$LiteralPath, $AclObject) }
+        function Get-Service { param([string]$Name) }
+        function Start-Service { param([string]$Name) }
+    }
+    BeforeEach {
+        Mock New-LocalUser { }
+        Mock Remove-StaleReceiveSession { }
+        Mock Stop-ReceiveSession { }
+        Mock Start-DiscoveryResponder { 'responder' }
+        Mock Get-Service { [PSCustomObject]@{ Status = 'Running' } }
+        Mock Get-Acl { [PSCustomObject]@{} | Add-Member -MemberType ScriptMethod -Name AddAccessRule -Value { } -PassThru }
+        $script:realNewItem = Get-Command New-Item -CommandType Cmdlet
+        Mock New-Item { & $script:realNewItem @PesterBoundParameters }
+        Mock New-Item { } -ParameterFilter { $Path -like 'HKLM:*' }
+        Mock Set-ItemProperty { }
+    }
+
+    It 'opens a session with values the Windows account and share cmdlets accept' {
+        $root = New-TempDir
+        try {
+            $session = Start-ReceiveSession -IncomingRoot $root
+        } catch {
+            # Off Windows the folder ACL step after account creation cannot run
+            if ($IsWindows -ne $false -or $_.Exception.Message -notmatch 'not supported on this platform') { throw }
+        }
+        Should -Invoke New-LocalUser -Times 1 -Exactly
+        if ($IsWindows -ne $false) {
+            $session.Code | Should -Match '^[A-Z2-9]{4}-[A-Z2-9]{4}$'
+            Test-Path $session.IncomingPath | Should -BeTrue
+            Should -Invoke Stop-ReceiveSession -Times 0
+        }
+    }
+}
+
 Describe 'LAN transfer end to end (share replaced by a local folder)' {
     BeforeAll {
         foreach ($core in 'Initialize-Environment', 'ConvertTo-MigrationManifest', 'Read-MigrationManifest', 'Invoke-Robocopy',

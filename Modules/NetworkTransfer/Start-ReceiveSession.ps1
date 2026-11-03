@@ -125,7 +125,7 @@ function Start-ReceiveSession {
     try {
         $password = ConvertTo-SecureString (ConvertTo-ReceivePassword $code) -AsPlainText -Force
         New-LocalUser -Name $session.AccountName -Password $password -AccountNeverExpires -PasswordNeverExpires `
-            -UserMayNotChangePassword -Description 'Temporary Win11Migrator transfer account (removed automatically)' -ErrorAction Stop | Out-Null
+            -UserMayNotChangePassword -Description 'Temporary Win11Migrator transfer account' -ErrorAction Stop | Out-Null
 
         $acl = Get-Acl -LiteralPath $incoming
         $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
