@@ -119,6 +119,19 @@ Describe 'Invoke-MigrationExport' {
         (Get-Content (Join-Path $pkg 'manifest.json') -Raw | ConvertFrom-Json).Metadata.ExportComplete | Should -BeTrue
     }
 
+    It 'leaves apps and app profiles out of the package when MigrateApps is off' {
+        $script:Config['MigrateApps'] = $false
+        $app = [MigrationApp]::new(); $app.Name = 'Chrome'; $app.InstallMethod = 'Winget'; $app.Selected = $true
+        $docs = New-UserFolder $source 'Documents' @('a.txt')
+        $selection = @{ Apps = @($app); AppProfiles = @(@{ Name = 'VS Code'; Selected = $true })
+                        UserData = @(New-Item-Data $docs 'Documents'); SettingsFlags = @{}; IncludeAppData = $false }
+        Invoke-MigrationExport -PackagePath $pkg -Selection $selection | Out-Null
+        $manifest = Get-Content (Join-Path $pkg 'manifest.json') -Raw | ConvertFrom-Json
+        @($manifest.Apps).Count | Should -Be 0
+        Test-Path (Join-Path $pkg 'AppProfiles') | Should -BeFalse
+        Test-Path (Join-Path (Join-Path $pkg 'UserData') 'Documents') | Should -BeTrue
+    }
+
     It 'copies each folder under UserData by its relative path and passes the exclusions to robocopy' {
         $docs = New-UserFolder $source 'Documents' @('report.docx')
         $ex = @{ Directories = @('node_modules'); Files = @('*.tmp') }

@@ -47,7 +47,8 @@ function Get-ImportWorkPath {
 }
 
 function Get-AppsToInstall {
-    param($Apps)
+    param($Apps, $Config = $script:Config)
+    if (-not (Get-MigrationSetting $Config 'MigrateApps' $true)) { return @() }
     return @($Apps | Where-Object { $_.Selected -and $_.InstallMethod -and $_.InstallMethod -ne 'Manual' -and $_.InstallStatus -ne 'Success' })
 }
 
@@ -66,7 +67,7 @@ function Start-AppInstallWorker {
     )
 
     # Plain property bags convert into the worker runspace's own MigrationApp class
-    $plainApps = @(Get-AppsToInstall $Apps | Select-Object *)
+    $plainApps = @(Get-AppsToInstall $Apps $Config | Select-Object *)
     $Progress['AppsTotal'] = $plainApps.Count
     $Progress['AppsDone'] = 0
     $Progress['AppsFailed'] = 0

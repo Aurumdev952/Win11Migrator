@@ -168,6 +168,10 @@ function Invoke-MigrationExport {
     $browsers = @(@($Selection.BrowserProfiles) | Where-Object { $_ -and $_.Selected } | ForEach-Object { ConvertTo-BrowserProfileItem $_ })
     $apps = @(@($Selection.Apps) | Where-Object { $_ -and $_.Selected })
     $appProfiles = @(@($Selection.AppProfiles) | Where-Object { $_ -and $_.Selected })
+    if (-not (Get-MigrationSetting $script:Config 'MigrateApps' $true)) {
+        $apps = @()
+        $appProfiles = @()
+    }
     $settings = @()
     $usmtPresent = $false
 
