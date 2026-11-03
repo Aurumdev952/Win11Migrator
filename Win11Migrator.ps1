@@ -539,7 +539,7 @@ if ($CLI) {
                 IncludeAppData  = $script:Config.DefaultSelection.AppData -ne $false
                 Exclusions      = $exclusions
             }
-            $requiredBytes = [long](($userData | Where-Object { -not $_.SkipCloudSync } | Measure-Object -Property SizeBytes -Sum).Sum)
+            $requiredBytes = Get-SelectedCopyBytes -UserData $userData
             $outputRoot = if ($PackagePath) { $PackagePath } else { $script:Config.PackagePath }
             $progress = [hashtable]::Synchronized(@{
                 Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())

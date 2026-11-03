@@ -51,8 +51,7 @@ function Initialize-ExportProgressPage {
     }
     foreach ($flag in (Get-AllSettingsFlags).Keys) { $selection.SettingsFlags[$flag] = [bool]$State[$flag] }
 
-    $requiredBytes = [long](@($State.UserData | Where-Object { $_.Selected -and -not $_.SkipCloudSync }) |
-        Measure-Object -Property SizeBytes -Sum).Sum
+    $requiredBytes = Get-SelectedCopyBytes -UserData $State.UserData
 
     # Resolve the destination up front so "not enough space" stops the export before anything is copied
     try {
