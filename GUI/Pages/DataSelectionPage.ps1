@@ -59,6 +59,36 @@ function Initialize-DataSelectionPage {
     # Track cloud sync toggle buttons so bulk actions can update them
     $cloudToggles = @{}
 
+    # --- Folder sizing ---
+    # Robocopy /L measures each folder with the active exclusions in a background runspace,
+    # so the page stays responsive on large profiles. Results land in each item's SizeBytes.
+    if (-not $State.DefaultExclusions) { $State['DefaultExclusions'] = Get-MigrationExclusions -Config $State.Config }
+    if (-not $State.Exclusions) { $State['Exclusions'] = $State.DefaultExclusions }
+    $sizeRows = [System.Collections.ArrayList]::new()
+    $sizer = [hashtable]::Synchronized(@{ Generation = 0; Jobs = [System.Collections.ArrayList]::new() })
+    $startSizing = {
+        $sizer.Generation++
+        $pendingItems = @($sizeRows | Where-Object { $null -eq $_.Item.SizeBytes } | ForEach-Object { $_.Item })
+        if ($pendingItems.Count -eq 0) { return }
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.Open()
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript({
+            param($Items, $Exclusions, $Root, $Sizer, $Generation, $Config)
+            . (Join-Path $Root 'Core\Invoke-Robocopy.ps1')
+            . (Join-Path $Root 'Core\Get-MigrationExclusions.ps1')
+            $script:Config = $Config
+            foreach ($it in $Items) {
+                if ($Sizer.Generation -ne $Generation) { return }
+                $bytes = try { [long](Measure-RobocopySource -Source $it.SourcePath -Exclusions (Get-ItemExclusions -Exclusions $Exclusions -Item $it)).Bytes } catch { 0L }
+                # A newer run (exclusions changed) owns the result now
+                if ($Sizer.Generation -eq $Generation) { $it.SizeBytes = $bytes }
+            }
+        }).AddArgument($pendingItems).AddArgument($State.Exclusions).AddArgument($State.MigratorRoot).AddArgument($sizer).AddArgument($sizer.Generation).AddArgument($State.Config)
+        $null = $sizer.Jobs.Add(@{ PowerShell = $ps; Handle = $ps.BeginInvoke(); Runspace = $rs })
+    }.GetNewClosure()
+
     # --- Detect cloud-synced folders ---
     $cloudItems = @()
     if ($State.UserData -and $State.UserData.Count -gt 0) {
@@ -97,72 +127,186 @@ function Initialize-DataSelectionPage {
         }.GetNewClosure())
     }
 
+    # --- Folder trees: expand a folder to untick subfolders or files inside it ---
+    # Unticked paths go to the folder's ExcludedDirs / ExcludedFiles, which the export hands robocopy as /XD and /XF
+    $tree = @{}
+    $tree.SetSubtreeEnabled = {
+        param($node, [bool]$enabled)
+        $tree = $tree
+        foreach ($child in @($node.Items)) {
+            if ($child -isnot [System.Windows.Controls.TreeViewItem]) { continue }
+            $child.Header.IsEnabled = $enabled
+            & $tree.SetSubtreeEnabled $child ($enabled -and [bool]$child.Header.IsChecked)
+        }
+    }.GetNewClosure()
+    $tree.SetExcluded = {
+        param($node, [bool]$excluded)
+        $tree = $tree
+        $info = $node.Tag
+        $item = $info.Item
+        $listName = if ($info.IsDir) { 'ExcludedDirs' } else { 'ExcludedFiles' }
+        if (-not $item[$listName]) { $item[$listName] = [System.Collections.ArrayList]::new() }
+        $list = $item[$listName]
+        if ($excluded) { if (-not $list.Contains($info.Path)) { [void]$list.Add($info.Path) } } else { $list.Remove($info.Path) }
+        & $tree.SetSubtreeEnabled $node (-not $excluded)
+        $item.SizeBytes = $null
+        & $startSizing
+    }.GetNewClosure()
+    $tree.NewNode = {
+        param($item, [string]$path, [bool]$isDir, [string]$label, [bool]$enabled)
+        $tree = $tree
+        $node = [System.Windows.Controls.TreeViewItem]::new()
+        $box = [System.Windows.Controls.CheckBox]::new()
+        $box.Content = $label
+        $excludedList = if ($isDir) { $item.ExcludedDirs } else { $item.ExcludedFiles }
+        $box.IsChecked = -not ($excludedList -and $excludedList.Contains($path))
+        $box.IsEnabled = $enabled
+        $box.Tag = $node
+        $box.Add_Checked({ & $tree.SetExcluded $this.Tag $false }.GetNewClosure())
+        $box.Add_Unchecked({ & $tree.SetExcluded $this.Tag $true }.GetNewClosure())
+        $node.Header = $box
+        $node.Tag = @{ Path = $path; IsDir = $isDir; Item = $item }
+        if ($isDir) {
+            [void]$node.Items.Add('Loading...')
+            $node.Add_Expanded({
+                # Expanded bubbles up from nested nodes; only the node that opened loads its children
+                if ($_.OriginalSource -ne $this) { return }
+                if ($this.Items.Count -ne 1 -or $this.Items[0] -ne 'Loading...') { return }
+                $this.Items.Clear()
+                & $tree.AddChildren $this $this.Tag.Item $this.Tag.Path ([bool]($this.Header.IsChecked -and $this.Header.IsEnabled))
+            }.GetNewClosure())
+        }
+        return $node
+    }.GetNewClosure()
+    $tree.AddChildren = {
+        param($parent, $item, [string]$path, [bool]$enabled)
+        $tree = $tree
+        try {
+            $dir = [System.IO.DirectoryInfo]::new($path)
+            $subdirs = @($dir.GetDirectories() | Where-Object { -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) } | Sort-Object Name)
+            $files = @($dir.GetFiles() | Sort-Object Name)
+        } catch {
+            [void]$parent.Items.Add("Cannot open this folder: $($_.Exception.Message)")
+            return
+        }
+        if ($subdirs.Count + $files.Count -eq 0) { [void]$parent.Items.Add('(empty)'); return }
+        $limit = 500
+        $shown = 0
+        foreach ($d in $subdirs) {
+            if ($shown -ge $limit) { break }
+            [void]$parent.Items.Add((& $tree.NewNode $item $d.FullName $true "$($d.Name)\" $enabled))
+            $shown++
+        }
+        foreach ($f in $files) {
+            if ($shown -ge $limit) { break }
+            $size = if ($f.Length -ge 1GB) { '{0:N1} GB' -f ($f.Length / 1GB) } elseif ($f.Length -ge 1MB) { '{0:N1} MB' -f ($f.Length / 1MB) } else { '{0:N0} KB' -f [Math]::Ceiling($f.Length / 1KB) }
+            [void]$parent.Items.Add((& $tree.NewNode $item $f.FullName $false "$($f.Name)  ($size)" $enabled))
+            $shown++
+        }
+        $rest = $subdirs.Count + $files.Count - $shown
+        if ($rest -gt 0) { [void]$parent.Items.Add("... and $rest more not shown. Untick the folder above to leave them all out.") }
+    }.GetNewClosure()
+
     # --- User Data Folders ---
     # Scan produces hashtables: @{ Name='Desktop'; SourcePath='...'; ItemCount=5; Selected=$true }
-    if ($State.UserData -and $State.UserData.Count -gt 0) {
-        foreach ($item in $State.UserData) {
-            # Build row: checkbox + optional cloud sync toggle
-            $row = [System.Windows.Controls.Grid]::new()
-            $col0 = [System.Windows.Controls.ColumnDefinition]::new()
-            $col0.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
-            $col1 = [System.Windows.Controls.ColumnDefinition]::new()
-            $col1.Width = [System.Windows.GridLength]::Auto
-            $null = $row.ColumnDefinitions.Add($col0)
-            $null = $row.ColumnDefinitions.Add($col1)
-            $row.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
-
-            $cb = [System.Windows.Controls.CheckBox]::new()
-            $cb.IsChecked = if ($item.Selected) { $true } else { $false }
-            $label = "$($item.Name) ($($item.ItemCount) items)"
-            if ($item.IsCloudSynced -and $item.CloudProvider) {
-                $provName = if ($item.CloudProvider -eq 'GoogleDrive') { 'Google Drive' } else { $item.CloudProvider }
-                $label = "$($item.Name) ($provName) ($($item.ItemCount) items)"
-            } elseif ($item.IsOneDrive) {
-                $label = "$($item.Name) (OneDrive) ($($item.ItemCount) items)"
-            }
-            if ($item.IsCustom) { $label = "$($item.Name) (Custom: $($item.SourcePath)) ($($item.ItemCount) items)" }
-            $cb.Content = $label
-            try { $cb.Style = $Page.FindResource('MigratorCheckBox') } catch {}
-            $cb.Tag = $item
-            $cb.Add_Checked({ $this.Tag.Selected = $true })
-            $cb.Add_Unchecked({ $this.Tag.Selected = $false })
-            [System.Windows.Controls.Grid]::SetColumn($cb, 0)
-            $row.Children.Add($cb) | Out-Null
-
-            # Add cloud sync toggle button for cloud-synced folders
-            if ($item.IsCloudSynced) {
-                $toggleBtn = [System.Windows.Controls.Button]::new()
-                $toggleBtn.FontSize = 11
-                $toggleBtn.Padding = [System.Windows.Thickness]::new(8, 2, 8, 2)
-                $toggleBtn.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
-                $toggleBtn.VerticalAlignment = 'Center'
-                $toggleBtn.Tag = $item
-                if ($item.SkipCloudSync) {
-                    $toggleBtn.Content = 'Skip (Cloud Sync)'
-                    $toggleBtn.Foreground = [System.Windows.Media.Brushes]::DodgerBlue
-                } else {
-                    $toggleBtn.Content = 'Copy'
-                    $toggleBtn.Foreground = [System.Windows.Media.Brushes]::Green
-                }
-                $toggleBtn.Add_Click({
-                    $itm = $this.Tag
-                    if ($itm.SkipCloudSync) {
-                        $itm.SkipCloudSync = $false
-                        $this.Content = 'Copy'
-                        $this.Foreground = [System.Windows.Media.Brushes]::Green
-                    } else {
-                        $itm.SkipCloudSync = $true
-                        $this.Content = 'Skip (Cloud Sync)'
-                        $this.Foreground = [System.Windows.Media.Brushes]::DodgerBlue
-                    }
-                })
-                [System.Windows.Controls.Grid]::SetColumn($toggleBtn, 1)
-                $row.Children.Add($toggleBtn) | Out-Null
-                $cloudToggles[$item.Name] = $toggleBtn
-            }
-
-            $ui.PanelUserData.Children.Add($row) | Out-Null
+    $addFolderRow = {
+        param($item)
+        $tree = $tree
+        $row = [System.Windows.Controls.Grid]::new()
+        foreach ($width in 'Auto', 'Star', 'Auto') {
+            $col = [System.Windows.Controls.ColumnDefinition]::new()
+            $col.Width = if ($width -eq 'Star') { [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star) } else { [System.Windows.GridLength]::Auto }
+            $null = $row.ColumnDefinitions.Add($col)
         }
+        $row.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+
+        $treeView = [System.Windows.Controls.TreeView]::new()
+        $treeView.Visibility = 'Collapsed'
+        $treeView.MaxHeight = 320
+        $treeView.Margin = [System.Windows.Thickness]::new(28, 0, 0, 8)
+
+        $expand = [System.Windows.Controls.Button]::new()
+        $expand.Content = [string][char]0x25B8
+        $expand.ToolTip = 'Show what is inside, to untick subfolders or files'
+        $expand.Width = 24
+        $expand.Padding = [System.Windows.Thickness]::new(0)
+        $expand.Margin = [System.Windows.Thickness]::new(0, 0, 4, 0)
+        $expand.Background = [System.Windows.Media.Brushes]::Transparent
+        $expand.BorderThickness = [System.Windows.Thickness]::new(0)
+        $expand.VerticalAlignment = 'Center'
+        $expand.Add_Click({
+            if ($treeView.Visibility -eq 'Visible') {
+                $treeView.Visibility = 'Collapsed'
+                $expand.Content = [string][char]0x25B8
+                return
+            }
+            if ($treeView.Items.Count -eq 0) { & $tree.AddChildren $treeView $item $item.SourcePath $true }
+            $treeView.Visibility = 'Visible'
+            $expand.Content = [string][char]0x25BE
+        }.GetNewClosure())
+        [System.Windows.Controls.Grid]::SetColumn($expand, 0)
+        $row.Children.Add($expand) | Out-Null
+
+        $cb = [System.Windows.Controls.CheckBox]::new()
+        $cb.IsChecked = if ($item.Selected) { $true } else { $false }
+        $label = "$($item.Name) ($($item.ItemCount) items)"
+        if ($item.IsCloudSynced -and $item.CloudProvider) {
+            $provName = if ($item.CloudProvider -eq 'GoogleDrive') { 'Google Drive' } else { $item.CloudProvider }
+            $label = "$($item.Name) ($provName) ($($item.ItemCount) items)"
+        } elseif ($item.IsOneDrive) {
+            $label = "$($item.Name) (OneDrive) ($($item.ItemCount) items)"
+        }
+        if ($item.IsCustom) { $label = "$($item.Name) (Custom: $($item.SourcePath)) ($($item.ItemCount) items)" }
+        $cb.Content = $label
+        try { $cb.Style = $Page.FindResource('MigratorCheckBox') } catch {}
+        $cb.Tag = $item
+        if ($item -is [hashtable] -and -not $item.ContainsKey('SizeBytes')) { $item['SizeBytes'] = $null }
+        $null = $sizeRows.Add(@{ Item = $item; CheckBox = $cb; Label = $label })
+        $cb.Add_Checked({ $item.Selected = $true; $treeView.IsEnabled = $true; $expand.IsEnabled = $true }.GetNewClosure())
+        $cb.Add_Unchecked({ $item.Selected = $false; $treeView.IsEnabled = $false; $expand.IsEnabled = $false }.GetNewClosure())
+        $treeView.IsEnabled = [bool]$item.Selected
+        $expand.IsEnabled = [bool]$item.Selected
+        [System.Windows.Controls.Grid]::SetColumn($cb, 1)
+        $row.Children.Add($cb) | Out-Null
+
+        # Add cloud sync toggle button for cloud-synced folders
+        if ($item.IsCloudSynced) {
+            $toggleBtn = [System.Windows.Controls.Button]::new()
+            $toggleBtn.FontSize = 11
+            $toggleBtn.Padding = [System.Windows.Thickness]::new(8, 2, 8, 2)
+            $toggleBtn.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+            $toggleBtn.VerticalAlignment = 'Center'
+            $toggleBtn.Tag = $item
+            if ($item.SkipCloudSync) {
+                $toggleBtn.Content = 'Skip (Cloud Sync)'
+                $toggleBtn.Foreground = [System.Windows.Media.Brushes]::DodgerBlue
+            } else {
+                $toggleBtn.Content = 'Copy'
+                $toggleBtn.Foreground = [System.Windows.Media.Brushes]::Green
+            }
+            $toggleBtn.Add_Click({
+                $itm = $this.Tag
+                if ($itm.SkipCloudSync) {
+                    $itm.SkipCloudSync = $false
+                    $this.Content = 'Copy'
+                    $this.Foreground = [System.Windows.Media.Brushes]::Green
+                } else {
+                    $itm.SkipCloudSync = $true
+                    $this.Content = 'Skip (Cloud Sync)'
+                    $this.Foreground = [System.Windows.Media.Brushes]::DodgerBlue
+                }
+            })
+            [System.Windows.Controls.Grid]::SetColumn($toggleBtn, 2)
+            $row.Children.Add($toggleBtn) | Out-Null
+            $cloudToggles[$item.Name] = $toggleBtn
+        }
+
+        $ui.PanelUserData.Children.Add($row) | Out-Null
+        $ui.PanelUserData.Children.Add($treeView) | Out-Null
+    }.GetNewClosure()
+
+    if ($State.UserData -and $State.UserData.Count -gt 0) {
+        foreach ($item in $State.UserData) { & $addFolderRow $item }
     } else {
         $noData = [System.Windows.Controls.TextBlock]::new()
         $noData.Text = "No user data folders detected."
@@ -186,21 +330,14 @@ function Initialize-DataSelectionPage {
                     [System.Windows.MessageBox]::Show("This folder is already in the list.", "Duplicate Folder", 'OK', 'Information') | Out-Null
                     return
                 }
-                $folderName = [System.IO.Path]::GetFileName($folderPath)
+                $folderName = [System.IO.Path]::GetFileName($folderPath.TrimEnd('\'))
+                if (-not $folderName -or $folderName.Contains(':')) { $folderName = "Drive $($folderPath.Substring(0, 1).ToUpper())" }
                 $topItems = @(Get-ChildItem $folderPath -ErrorAction SilentlyContinue -Force)
-                $newItem = @{ Name = $folderName; SourcePath = $folderPath; ItemCount = $topItems.Count; Selected = $true; IsCustom = $true; IsOneDrive = $false }
+                $newItem = @{ Name = $folderName; SourcePath = $folderPath; ItemCount = $topItems.Count; Selected = $true; IsCustom = $true; IsOneDrive = $false; SizeBytes = $null }
                 $State.UserData += $newItem
 
-                # Add checkbox to panel
-                $cb = [System.Windows.Controls.CheckBox]::new()
-                $cb.IsChecked = $true
-                $cb.Content = "$folderName (Custom: $folderPath) ($($topItems.Count) items)"
-                try { $cb.Style = $Page.FindResource('MigratorCheckBox') } catch {}
-                $cb.Tag = $newItem
-                $cb.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
-                $cb.Add_Checked({ $this.Tag.Selected = $true }.GetNewClosure())
-                $cb.Add_Unchecked({ $this.Tag.Selected = $false }.GetNewClosure())
-                $ui.PanelUserData.Children.Add($cb) | Out-Null
+                & $addFolderRow $newItem
+                & $startSizing
                 Write-Host "[DATA] Custom folder added: $folderPath ($($topItems.Count) items)" -ForegroundColor Green
             }
         }.GetNewClosure())
@@ -236,7 +373,7 @@ function Initialize-DataSelectionPage {
     if ($State.BrowserProfiles -and $State.BrowserProfiles.Count -gt 0) {
         # Add Selected property if missing
         foreach ($profile in $State.BrowserProfiles) {
-            if (-not $profile.ContainsKey('Selected')) { $profile['Selected'] = $true }
+            if (-not $profile.ContainsKey('Selected')) { $profile['Selected'] = $State.Config.DefaultSelection.BrowserProfiles -ne $false }
         }
 
         foreach ($profile in $State.BrowserProfiles) {
@@ -265,19 +402,15 @@ function Initialize-DataSelectionPage {
     }
 
     # --- System Settings checkboxes ---
-    $State['IncludeWiFi'] = $true
-    $State['IncludePrinters'] = $true
-    $State['IncludeDrives'] = $true
-    $State['IncludeEnvVars'] = $true
-    $State['IncludeWinSettings'] = $true
-    $State['IncludeAccessibility'] = $true
-    $State['IncludeRegional'] = $true
-    $State['IncludeVPN'] = $true
-    $State['IncludeCertificates'] = $true
-    $State['IncludeODBC'] = $true
-    $State['IncludeFolderOptions'] = $true
-    $State['IncludeInputSettings'] = $true
-    $State['IncludePower'] = $true
+    $settingsDefault = $State.Config.DefaultSelection.SystemSettings -ne $false
+    foreach ($flag in 'IncludeWiFi', 'IncludePrinters', 'IncludeDrives', 'IncludeEnvVars', 'IncludeWinSettings', 'IncludeAccessibility',
+                      'IncludeRegional', 'IncludeVPN', 'IncludeCertificates', 'IncludeODBC', 'IncludeFolderOptions', 'IncludeInputSettings', 'IncludePower') {
+        $State[$flag] = $settingsDefault
+    }
+    foreach ($box in $ui.ChkWiFi, $ui.ChkPrinters, $ui.ChkDrives, $ui.ChkEnvVars, $ui.ChkWinSettings, $ui.ChkAccessibility, $ui.ChkRegional,
+                     $ui.ChkVPN, $ui.ChkCertificates, $ui.ChkODBC, $ui.ChkFolderOptions, $ui.ChkInputSettings, $ui.ChkPower) {
+        if ($box) { $box.IsChecked = $settingsDefault }
+    }
 
     # Annotate checkboxes with scanned counts
     if ($State.SystemSettings) {
@@ -344,13 +477,73 @@ function Initialize-DataSelectionPage {
         $ui.ChkPower.Add_Unchecked({ $State.IncludePower = $false }.GetNewClosure())
     }
 
-    # --- Total size display ---
-    $selectedFolders = @($State.UserData | Where-Object { $_.Selected }).Count
-    $selectedBrowsers = @($State.BrowserProfiles | Where-Object { $_.Selected }).Count
-    $settingsCount = if ($State.SystemSettings) { ($State.SystemSettings | Measure-Object -Property Count -Sum).Sum } else { 0 }
-    if ($ui.TotalSize) {
-        $ui.TotalSize.Text = "$selectedFolders folders, $selectedBrowsers browser profiles, $settingsCount settings"
+    # --- Exclusion editor ---
+    # The boxes hold the full list (defaults included) so a default can be removed as well as added
+    $excludeDirsBox = $Page.FindName('txtExcludeDirs')
+    $excludeFilesBox = $Page.FindName('txtExcludeFiles')
+    if ($excludeDirsBox -and $excludeFilesBox) {
+        $showExclusions = {
+            param($ex)
+            $excludeDirsBox.Text = ($ex.Directories -join "`r`n")
+            $excludeFilesBox.Text = ($ex.Files -join "`r`n")
+        }.GetNewClosure()
+        & $showExclusions $State.Exclusions
+
+        $applyExclusions = {
+            param($ex)
+            $State['Exclusions'] = $ex
+            foreach ($row in $sizeRows) { $row.Item.SizeBytes = $null }
+            & $startSizing
+        }.GetNewClosure()
+
+        $btnApply = $Page.FindName('btnApplyExclusions')
+        if ($btnApply) {
+            $btnApply.Add_Click({
+                $split = { param($text) @($text -split "[\r\n,;]+" | ForEach-Object { $_.Trim().TrimEnd('\', '/') } | Where-Object { $_ }) }
+                & $applyExclusions @{ Directories = (& $split $excludeDirsBox.Text); Files = (& $split $excludeFilesBox.Text) }
+            }.GetNewClosure())
+        }
+        $btnReset = $Page.FindName('btnResetExclusions')
+        if ($btnReset) {
+            $btnReset.Add_Click({
+                & $applyExclusions $State.DefaultExclusions
+                & $showExclusions $State.DefaultExclusions
+            }.GetNewClosure())
+        }
     }
+
+    # --- Sizes and total, refreshed by the window timer while sizing runs ---
+    $sizeTick = {
+        param($s)
+        $total = 0L
+        $measuring = $false
+        foreach ($row in $sizeRows) {
+            $bytes = $row.Item.SizeBytes
+            $sizeText = if ($null -eq $bytes) { $measuring = $true; 'measuring...' }
+                        elseif ($bytes -ge 1GB) { '{0:N1} GB' -f ($bytes / 1GB) }
+                        else { '{0:N0} MB' -f ($bytes / 1MB) }
+            $text = "$($row.Label) - $sizeText"
+            if ($row.CheckBox.Content -ne $text) { $row.CheckBox.Content = $text }
+            if ($null -ne $bytes -and $row.Item.Selected -and -not $row.Item.SkipCloudSync) { $total += $bytes }
+        }
+        if ($ui.TotalSize) {
+            $folders = @($sizeRows | Where-Object { $_.Item.Selected }).Count
+            $suffix = if ($measuring) { ' (still measuring)' } else { '' }
+            $ui.TotalSize.Text = ('{0} folders selected, {1:N1} GB to copy{2}' -f $folders, ($total / 1GB), $suffix)
+        }
+        foreach ($job in @($sizer.Jobs)) {
+            if ($job.Handle.IsCompleted) {
+                try { $job.PowerShell.EndInvoke($job.Handle) } catch {}
+                $job.PowerShell.Dispose()
+                $job.Runspace.Dispose()
+                $sizer.Jobs.Remove($job)
+            }
+        }
+    }.GetNewClosure()
+    $State.OnTick = $sizeTick
+    # Navigation clears OnTick and this page is cached, so coming Back must hand the timer its handler again
+    $Page.Add_Loaded({ $State.OnTick = $sizeTick }.GetNewClosure())
+    & $startSizing
 
     # --- Migration Profile support ---
     # If a profile is loaded, apply its selections

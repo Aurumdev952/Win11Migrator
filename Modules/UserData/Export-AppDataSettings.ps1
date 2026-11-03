@@ -35,34 +35,27 @@ function Export-AppDataSettings {
         [string[]]$AppDataFolders,
 
         [Parameter(Mandatory)]
-        [string]$OutputDirectory
+        [string]$OutputDirectory,
+
+        [hashtable]$Exclusions = (Get-MigrationExclusions),
+
+        [ValidateSet('Local', 'USB', 'Network', 'Cloud')]
+        [string]$TargetKind = 'Local',
+
+        [hashtable]$Progress
     )
 
     Write-MigrationLog -Message "Beginning AppData settings export" -Level Info
 
-    # Load folder list from config if not supplied
     if (-not $AppDataFolders) {
-        if ($script:Config -and $script:Config['AppDataInclude']) {
-            $AppDataFolders = @()
-            foreach ($f in $script:Config['AppDataInclude']) {
-                $AppDataFolders += $f.ToString()
-            }
-        }
+        $AppDataFolders = @(Get-MigrationSetting $script:Config 'AppDataInclude' @() | ForEach-Object { $_.ToString() })
     }
-
-    if (-not $AppDataFolders -or $AppDataFolders.Count -eq 0) {
+    if ($AppDataFolders.Count -eq 0) {
         Write-MigrationLog -Message "No AppData folders configured for export" -Level Warning
         return @()
     }
 
     $exportedItems = [System.Collections.Generic.List[UserDataItem]]::new()
-
-    # Robocopy settings
-    $retries = if ($script:Config -and $script:Config['RobocopyRetries'])     { $script:Config['RobocopyRetries'] }     else { 3 }
-    $waitSec = if ($script:Config -and $script:Config['RobocopyWaitSeconds']) { $script:Config['RobocopyWaitSeconds'] } else { 5 }
-    $threads = if ($script:Config -and $script:Config['RobocopyThreads'])     { $script:Config['RobocopyThreads'] }     else { 8 }
-
-    # Search both Roaming and Local AppData
     $appDataRoots = @(
         @{ Label = 'Roaming'; Path = $env:APPDATA }
         @{ Label = 'Local';   Path = $env:LOCALAPPDATA }
@@ -70,51 +63,29 @@ function Export-AppDataSettings {
 
     foreach ($folder in $AppDataFolders) {
         foreach ($root in $appDataRoots) {
+            if (-not $root.Path) { continue }
             $sourcePath = Join-Path $root.Path $folder
+            if (-not (Test-Path -LiteralPath $sourcePath)) { continue }
 
-            if (-not (Test-Path $sourcePath)) {
-                Write-MigrationLog -Message "AppData folder not found ($($root.Label)): $sourcePath" -Level Debug
-                continue
-            }
-
-            $relativePath = "AppData\$($root.Label)\$folder"
+            # RelativePath is relative to the package root: AppData\<Roaming|Local>\<folder>
+            $relativePath = Join-Path (Join-Path 'AppData' $root.Label) $folder
             $destPath = Join-Path $OutputDirectory $relativePath
 
-            Write-MigrationLog -Message "Exporting AppData: $sourcePath -> $destPath" -Level Info
-
             $item = [UserDataItem]::new()
-            $item.SourcePath    = $sourcePath
-            $item.RelativePath  = $relativePath
-            $item.Category      = 'AppData'
-            $item.Selected      = $true
-            $item.ExportStatus  = 'Pending'
+            $item.SourcePath   = $sourcePath
+            $item.RelativePath = $relativePath
+            $item.Category     = 'AppData'
+            $item.Selected     = $true
+            if ($Progress) { $Progress['Item'] = "AppData\$($root.Label)\$folder" }
 
             try {
-                # Calculate size
-                $size = (Get-ChildItem $sourcePath -Recurse -Force -ErrorAction SilentlyContinue |
-                         Measure-Object -Property Length -Sum).Sum
-                $item.SizeBytes = if ($size) { $size } else { 0 }
-
-                # Create destination
-                if (-not (Test-Path $destPath)) {
-                    New-Item -Path $destPath -ItemType Directory -Force | Out-Null
+                $copy = Invoke-Robocopy -Source $sourcePath -Destination $destPath -TargetKind $TargetKind -Exclusions $Exclusions -Progress $Progress
+                $item.SizeBytes = $copy.Bytes
+                $item.ExportStatus = if ($copy.Success) { 'Success' } else { 'Failed' }
+                if (-not $copy.Success) {
+                    Write-MigrationLog -Message "AppData export failed for $folder ($($root.Label)), exit code $($copy.ExitCode)" -Level Error
                 }
-
-                # Copy using Robocopy
-                $robocopyOutput = & robocopy $sourcePath $destPath /MIR /R:$retries /W:$waitSec /MT:$threads /NP /NDL /NJH /NJS /XF *.tmp *.log 2>&1
-                $exitCode = $LASTEXITCODE
-
-                if ($exitCode -lt 8) {
-                    $item.ExportStatus = 'Success'
-                    Write-MigrationLog -Message "AppData export successful: $folder ($($root.Label))" -Level Success
-                }
-                else {
-                    $item.ExportStatus = 'Failed'
-                    $errorLines = ($robocopyOutput | Select-Object -Last 5) -join '; '
-                    Write-MigrationLog -Message "AppData export failed for $folder ($($root.Label)), exit code $exitCode. $errorLines" -Level Error
-                }
-            }
-            catch {
+            } catch {
                 $item.ExportStatus = 'Failed'
                 Write-MigrationLog -Message "Exception exporting AppData $folder ($($root.Label)): $($_.Exception.Message)" -Level Error
             }

@@ -18,29 +18,31 @@
     Integration tests for Win11Migrator - tests the full export pipeline.
 #>
 
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
 
-Describe "Integration Tests" {
+Describe "Integration Tests" -Tag "Windows" {
 
     BeforeAll {
+        $ProjectRoot = Split-Path $PSScriptRoot -Parent
         # Load all modules
-        . "$ProjectRoot\Core\Initialize-Environment.ps1"
-        . "$ProjectRoot\Core\Write-MigrationLog.ps1"
-        . "$ProjectRoot\Core\Test-AdminPrivilege.ps1"
-        . "$ProjectRoot\Core\Invoke-WithRetry.ps1"
-        . "$ProjectRoot\Core\Get-DiskSpaceEstimate.ps1"
-        . "$ProjectRoot\Core\ConvertTo-MigrationManifest.ps1"
-        . "$ProjectRoot\Core\Read-MigrationManifest.ps1"
+        . "$ProjectRoot/Core/Initialize-Environment.ps1"
+        . "$ProjectRoot/Core/Write-MigrationLog.ps1"
+        . "$ProjectRoot/Core/Invoke-Robocopy.ps1"
+        . "$ProjectRoot/Core/Get-MigrationExclusions.ps1"
+        . "$ProjectRoot/Core/Test-AdminPrivilege.ps1"
+        . "$ProjectRoot/Core/Invoke-WithRetry.ps1"
+        . "$ProjectRoot/Core/Get-DiskSpaceEstimate.ps1"
+        . "$ProjectRoot/Core/ConvertTo-MigrationManifest.ps1"
+        . "$ProjectRoot/Core/Read-MigrationManifest.ps1"
 
         $script:MigratorRoot = $ProjectRoot
         $script:Config = Initialize-Environment -RootPath $ProjectRoot
 
-        Get-ChildItem "$ProjectRoot\Modules\AppDiscovery\*.ps1" | ForEach-Object { . $_.FullName }
-        Get-ChildItem "$ProjectRoot\Modules\UserData\*.ps1" | ForEach-Object { . $_.FullName }
-        Get-ChildItem "$ProjectRoot\Modules\BrowserProfiles\*.ps1" | ForEach-Object { . $_.FullName }
-        Get-ChildItem "$ProjectRoot\Modules\SystemSettings\*.ps1" | ForEach-Object { . $_.FullName }
-        Get-ChildItem "$ProjectRoot\Modules\StorageTargets\*.ps1" | ForEach-Object { . $_.FullName }
-        Get-ChildItem "$ProjectRoot\Reports\*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/AppDiscovery/*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/UserData/*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/BrowserProfiles/*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/SystemSettings/*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/StorageTargets/*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Reports/*.ps1" | ForEach-Object { . $_.FullName }
     }
 
     Context "Full scan pipeline" {
@@ -57,7 +59,7 @@ Describe "Integration Tests" {
             $paths.Count | Should -BeGreaterThan 0
         }
 
-        It "Should detect browser profiles" {
+        It "Should detect browser profiles" -Skip:(-not (Test-Path "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default") -and -not (Test-Path "$env:LOCALAPPDATA\Google\Chrome\User Data\Default")) {
             $profiles = Get-BrowserProfilePaths
             # At minimum Edge should be present on Win11
             $profiles.Count | Should -BeGreaterOrEqual 1
@@ -66,7 +68,7 @@ Describe "Integration Tests" {
 
     Context "Manifest creation and validation" {
         It "Should create a valid manifest from scan results" {
-            $tempDir = Join-Path $env:TEMP "Win11Migrator_IntTest_$(Get-Random)"
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "Win11Migrator_IntTest_$(Get-Random)"
             New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
 
             try {
@@ -122,7 +124,7 @@ Describe "Integration Tests" {
 
     Context "Report generation" {
         It "Should generate a manual install report" {
-            $tempDir = Join-Path $env:TEMP "Win11Migrator_Report_$(Get-Random)"
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "Win11Migrator_Report_$(Get-Random)"
             New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
 
             try {
@@ -133,7 +135,7 @@ Describe "Integration Tests" {
                 $app.InstallMethod = "Manual"
                 $app.InstallStatus = "Pending"
 
-                $reportPath = New-ManualInstallReport -Apps @($app) -OutputPath $tempDir
+                $reportPath = New-ManualInstallReport -Apps @($app) -OutputDirectory $tempDir
                 Test-Path $reportPath | Should -Be $true
 
                 $html = Get-Content $reportPath -Raw

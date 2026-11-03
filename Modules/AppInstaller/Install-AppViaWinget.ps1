@@ -65,12 +65,18 @@ function Install-AppViaWinget {
     # -----------------------------------------------------------------
     # Build arguments
     # -----------------------------------------------------------------
+    # --exact stops a partial ID from matching a different package; Store IDs look like 9NBLGGH4NNS1 or XP...
+    $wingetSource = if ($App.PackageId -match '^(9[A-Z0-9]{11}|XP[A-Z0-9]{10,})$') { 'msstore' } else { 'winget' }
     $arguments = @(
         'install'
         '--id'
         $App.PackageId
+        '--exact'
+        '--source'
+        $wingetSource
         '--accept-package-agreements'
         '--accept-source-agreements'
+        '--disable-interactivity'
         '--silent'
         '--force'
     )

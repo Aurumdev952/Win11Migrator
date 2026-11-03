@@ -51,6 +51,7 @@ function Initialize-ScanProgressPage {
     }
 
     $State.BtnNext.IsEnabled = $false
+    $migrateApps = $State.Config['MigrateApps'] -ne $false
     $scanCtx = @{
         Phase         = -1
         AppJob        = $null
@@ -82,6 +83,18 @@ function Initialize-ScanProgressPage {
         switch ($scanCtx.Phase) {
             # ---- Phase 0: Launch background registry scan ----
             0 {
+                if (-not $migrateApps) {
+                    $s.Apps = @()
+                    $s.AppProfiles = @()
+                    foreach ($row in @(@($ui.IconApps, $ui.CountApps), @($ui.IconAppProfiles, $ui.CountAppProfiles), @($ui.IconInstall, $ui.CountInstall))) {
+                        $row[0].Text = [char]0x25CB
+                        $row[0].Foreground = [System.Windows.Media.Brushes]::Gray
+                        $row[1].Text = 'Skipped (files only)'
+                    }
+                    if ($ui.Log) { $ui.Log.AppendText("Application transfer is turned off. Scanning files and settings only.`r`n") }
+                    $scanCtx.Phase = 2
+                    return
+                }
                 Write-Host "[SCAN] Phase 0: Launching background registry scan" -ForegroundColor Cyan
                 $ui.IconApps.Text = [char]0x25BA
                 $ui.IconApps.Foreground = [System.Windows.Media.Brushes]::DodgerBlue
@@ -370,7 +383,7 @@ function Initialize-ScanProgressPage {
                                 $profiles = @(Get-ChildItem $def.Path -Directory -ErrorAction SilentlyContinue)
                             }
                             foreach ($p in $profiles) {
-                                $browsers += @{ Browser = $def.Name; ProfileName = $p.Name; ProfilePath = $p.FullName; Selected = $true; ExportStatus = 'Pending' }
+                                $browsers += @{ Browser = $def.Name; ProfileName = $p.Name; ProfilePath = $p.FullName; Selected = ($s.Config.DefaultSelection.BrowserProfiles -ne $false); ExportStatus = 'Pending' }
                             }
                             if ($ui.Log) { $ui.Log.AppendText("  $($def.Name): $($profiles.Count) profile(s)`r`n") }
                         }
@@ -442,7 +455,7 @@ function Initialize-ScanProgressPage {
                     } catch {}
 
                     $s.SystemSettings = $settings
-                    $totalItems = ($settings | Measure-Object -Property Count -Sum).Sum
+                    $totalItems = ($settings | ForEach-Object { [int]$_.Count } | Measure-Object -Sum).Sum
                     $ui.CountSettings.Text = "$totalItems items"
                     $ui.IconSettings.Text = [char]0x25CF
                     $ui.IconSettings.Foreground = [System.Windows.Media.Brushes]::Green
@@ -460,6 +473,21 @@ function Initialize-ScanProgressPage {
 
             # ---- Phase 75: Application Profile detection ----
             75 {
+                if (-not $migrateApps) {
+                    if ($ui.Log) {
+                        $ui.Log.AppendText("`r`nScan complete! Click Next to continue.`r`n")
+                        $ui.Log.ScrollToEnd()
+                    }
+                    $ui.Progress.Value = 100
+                    $ui.Percent.Text = "100%"
+                    $ui.Title.Text = "Scan Complete"
+                    $ui.Status.Text = "Review the results below, then click Next to continue."
+                    $s.BtnNext.IsEnabled = $true
+                    $scanCtx.Phase = -1
+                    $s.ActiveJob = $null
+                    $s.OnTick = $null
+                    return
+                }
                 Write-Host "[SCAN] Phase 75: Application profiles" -ForegroundColor Cyan
                 $ui.IconAppProfiles.Text = [char]0x25BA
                 $ui.IconAppProfiles.Foreground = [System.Windows.Media.Brushes]::DodgerBlue
@@ -756,152 +784,50 @@ function Initialize-ScanProgressPage {
                     $ps = [System.Management.Automation.PowerShell]::Create()
                     $ps.Runspace = $runspace
                     $ps.AddScript({
-                        # Dot-source normalization functions inside the runspace
-                        . (Join-Path $migratorRoot "Modules\AppDiscovery\Get-NormalizedAppName.ps1")
+                        foreach ($core in 'Initialize-Environment', 'Write-MigrationLog') { . (Join-Path $migratorRoot "Core\$core.ps1") }
+                        foreach ($f in 'Get-NormalizedAppName', 'Get-WingetApps', 'Search-WingetPackage') {
+                            . (Join-Path $migratorRoot "Modules\AppDiscovery\$f.ps1")
+                        }
+                        $script:MigratorRoot = $migratorRoot
 
-                        # Stub Write-MigrationLog for the runspace
-                        function Write-MigrationLog { param([string]$Message, [string]$Level = 'Info') Write-Host "[$Level] $Message" }
-
-                        # Step 1: Try 'winget list' for exact ID matches
+                        # Step 1: apps winget already knows are installed, with IDs a source can reinstall
                         $wingetInstalled = @{}
                         try {
-                            $listOutput = & winget list --accept-source-agreements --disable-interactivity 2>&1 |
-                                Out-String -Stream | Where-Object { $_ -is [string] }
-
-                            # Find header separator
-                            $sepIdx = -1
-                            $hdrIdx = -1
-                            for ($i = 0; $i -lt $listOutput.Count; $i++) {
-                                if ($listOutput[$i] -match '^-{3,}') {
-                                    $sepIdx = $i
-                                    $hdrIdx = $i - 1
-                                    break
-                                }
-                            }
-
-                            if ($sepIdx -ge 0 -and $hdrIdx -ge 0) {
-                                $hdr = $listOutput[$hdrIdx]
-                                $nameStart = 0
-                                $idStart = $hdr.IndexOf('Id')
-                                $verStart = $hdr.IndexOf('Version')
-
-                                if ($idStart -gt 0) {
-                                    for ($i = $sepIdx + 1; $i -lt $listOutput.Count; $i++) {
-                                        $line = $listOutput[$i]
-                                        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                                        if ($line.Length -lt $idStart + 2) { continue }
-                                        try {
-                                            $pkgName = $line.Substring($nameStart, [Math]::Min($idStart, $line.Length)).TrimEnd()
-                                            $idLen = if ($verStart -gt $idStart) { $verStart - $idStart } else { $line.Length - $idStart }
-                                            $pkgId = $line.Substring($idStart, [Math]::Min($idLen, $line.Length - $idStart)).TrimEnd()
-                                            if ($pkgName -and $pkgId) {
-                                                $normPkg = Get-NormalizedAppName -Name $pkgName
-                                                if ($normPkg) {
-                                                    $wingetInstalled[$normPkg] = $pkgId
-                                                }
-                                            }
-                                        } catch {}
-                                    }
-                                }
+                            foreach ($w in @(Get-WingetApps)) {
+                                if ($w.PackageId -and $w.NormalizedName) { $wingetInstalled[$w.NormalizedName] = $w.PackageId }
                             }
                         } catch {
                             Write-Host "[WINGET] winget list failed: $($_.Exception.Message)" -ForegroundColor Yellow
                         }
 
-                        # Match unresolved apps against winget list
                         $stillUnresolved = [System.Collections.ArrayList]::new()
                         foreach ($appInfo in $unresolvedApps) {
                             $normName = $appInfo.NormalizedName
-                            if ($wingetInstalled.ContainsKey($normName)) {
-                                $null = $shared.Results.Add(@{
-                                    Index      = $appInfo.Index
-                                    Found      = $true
-                                    PackageId  = $wingetInstalled[$normName]
-                                    Confidence = 1.0
-                                })
-                            } else {
-                                # Check fuzzy match against winget list names
-                                $bestMatch = $null
-                                $bestSim = 0.0
+                            $bestMatch = if ($wingetInstalled.ContainsKey($normName)) { $normName } else { $null }
+                            $bestSim = if ($bestMatch) { 1.0 } else { 0.0 }
+                            if (-not $bestMatch) {
                                 foreach ($wKey in $wingetInstalled.Keys) {
                                     $sim = Get-AppNameSimilarity -Name1 $normName -Name2 $wKey
-                                    if ($sim -gt $bestSim) {
-                                        $bestSim = $sim
-                                        $bestMatch = $wKey
-                                    }
+                                    if ($sim -gt $bestSim) { $bestSim = $sim; $bestMatch = $wKey }
                                 }
-                                if ($bestSim -ge 0.7 -and $bestMatch) {
-                                    $null = $shared.Results.Add(@{
-                                        Index      = $appInfo.Index
-                                        Found      = $true
-                                        PackageId  = $wingetInstalled[$bestMatch]
-                                        Confidence = $bestSim
-                                    })
-                                } else {
-                                    $stillUnresolved.Add($appInfo) | Out-Null
-                                }
+                            }
+                            if ($bestMatch -and $bestSim -ge 0.7) {
+                                $null = $shared.Results.Add(@{ Index = $appInfo.Index; Found = $true; PackageId = $wingetInstalled[$bestMatch]; Confidence = $bestSim })
+                            } else {
+                                $null = $stillUnresolved.Add($appInfo)
                             }
                         }
 
-                        # Step 2: For remaining, run 'winget search' per app
+                        # Step 2: search for the rest (cached per product name inside Search-WingetPackage)
                         $shared.Total = $stillUnresolved.Count
                         $shared.Current = 0
                         foreach ($appInfo in $stillUnresolved) {
                             $shared.Current++
                             $shared.CurrentApp = $appInfo.Name
-
                             try {
-                                $searchName = $appInfo.NormalizedName
-                                $rawOutput = & winget search $searchName --accept-source-agreements --disable-interactivity 2>&1
-                                $outputLines = $rawOutput | Out-String -Stream | Where-Object { $_ -is [string] }
-
-                                $noResult = $outputLines | Where-Object { $_ -match 'No package found' }
-                                if ($noResult -or -not $outputLines) {
-                                    continue
-                                }
-
-                                # Parse table
-                                $sIdx = -1; $hIdx = -1
-                                for ($i = 0; $i -lt $outputLines.Count; $i++) {
-                                    if ($outputLines[$i] -match '^-{3,}') { $sIdx = $i; $hIdx = $i - 1; break }
-                                }
-                                if ($sIdx -lt 0 -or $hIdx -lt 0) { continue }
-
-                                $hdrLine = $outputLines[$hIdx]
-                                $ns = 0
-                                $ids = $hdrLine.IndexOf('Id')
-                                $vs = $hdrLine.IndexOf('Version')
-                                if ($ids -lt 0) { continue }
-
-                                $bestPkgId = ''
-                                $bestSim = 0.0
-                                for ($i = $sIdx + 1; $i -lt $outputLines.Count; $i++) {
-                                    $line = $outputLines[$i]
-                                    if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                                    if ($line -match '^\d+ (packages|results)') { continue }
-                                    if ($line.Length -lt $ids + 2) { continue }
-                                    try {
-                                        $pName = $line.Substring($ns, [Math]::Min($ids, $line.Length)).TrimEnd()
-                                        $idLen = if ($vs -gt $ids) { $vs - $ids } else { $line.Length - $ids }
-                                        $pId = $line.Substring($ids, [Math]::Min($idLen, $line.Length - $ids)).TrimEnd()
-                                        if ($pName -and $pId) {
-                                            $normCandidate = Get-NormalizedAppName -Name $pName
-                                            $sim = Get-AppNameSimilarity -Name1 $searchName -Name2 $normCandidate
-                                            if ($sim -gt $bestSim) {
-                                                $bestSim = $sim
-                                                $bestPkgId = $pId.Trim()
-                                            }
-                                        }
-                                    } catch {}
-                                }
-
-                                if ($bestSim -ge 0.5 -and $bestPkgId) {
-                                    $null = $shared.Results.Add(@{
-                                        Index      = $appInfo.Index
-                                        Found      = $true
-                                        PackageId  = $bestPkgId
-                                        Confidence = $bestSim
-                                    })
+                                $found = Search-WingetPackage -AppName $appInfo.Name -NormalizedName $appInfo.NormalizedName
+                                if ($found.Found -and $found.Confidence -ge 0.5) {
+                                    $null = $shared.Results.Add(@{ Index = $appInfo.Index; Found = $true; PackageId = $found.PackageId; Confidence = $found.Confidence })
                                 }
                             } catch {
                                 Write-Host "[WINGET] Search failed for '$($appInfo.Name)': $($_.Exception.Message)" -ForegroundColor Yellow

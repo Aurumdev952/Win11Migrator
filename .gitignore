@@ -31,3 +31,6 @@ desktop.ini
 *.tmp
 *.bak
 ~$*
+
+# Release builds
+dist/

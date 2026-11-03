@@ -79,12 +79,7 @@ function Test-RemoteAccess {
         Write-MigrationLog -Message "Ping test error: $($_.Exception.Message)" -Level Warning
     }
 
-    # If not reachable, skip remaining tests but still report
-    if (-not $result.Reachable) {
-        $result.ErrorMessage = ($errors -join ' ') + ' Troubleshooting: Verify the computer is powered on, connected to the same network, and that ICMP is not blocked by firewall.'
-        Write-MigrationLog -Message "Host unreachable, skipping further tests" -Level Warning
-        return $result
-    }
+    # Many PCs drop ping at the firewall while SMB still works, so a failed ping does not stop the other tests
 
     # -------------------------------------------------------------------------
     # 2. WinRM test

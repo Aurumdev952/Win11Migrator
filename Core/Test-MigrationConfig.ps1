@@ -68,6 +68,13 @@ function Test-MigrationConfig {
         }
     }
 
+    function Test-StringArray {
+        param($Value)
+        if ($Value -isnot [System.Array]) { return $false }
+        foreach ($v in $Value) { if ($v -isnot [string] -or [string]::IsNullOrWhiteSpace($v)) { return $false } }
+        return $true
+    }
+
     # ==================================================================
     #  1. AppSettings.json - required keys
     # ==================================================================
@@ -79,6 +86,43 @@ function Test-MigrationConfig {
                 $errors.Add("AppSettings.json: missing required key '$key'")
             } elseif ([string]::IsNullOrWhiteSpace($appSettings.$key)) {
                 $errors.Add("AppSettings.json: required key '$key' is empty")
+            }
+        }
+
+        foreach ($key in 'ExcludeDirectories', 'ExcludeFilePatterns') {
+            if ($appSettings.PSObject.Properties[$key] -and -not (Test-StringArray $appSettings.$key)) {
+                $errors.Add("AppSettings.json: '$key' must be an array of non-empty strings")
+            }
+        }
+        foreach ($key in 'RobocopyRetries', 'RobocopyWaitSeconds', 'MaxFileSizeMB') {
+            if ($appSettings.PSObject.Properties[$key] -and -not ($appSettings.$key -is [ValueType] -and $appSettings.$key -ge 0)) {
+                $errors.Add("AppSettings.json: '$key' must be a number of zero or more")
+            }
+        }
+        if ($appSettings.PSObject.Properties['RobocopyThreadsByTarget']) {
+            foreach ($prop in $appSettings.RobocopyThreadsByTarget.PSObject.Properties) {
+                if ($prop.Name -notin 'Local', 'USB', 'Network', 'Cloud') {
+                    $warnings.Add("AppSettings.json: RobocopyThreadsByTarget has unknown target kind '$($prop.Name)'")
+                } elseif (-not ($prop.Value -is [ValueType] -and $prop.Value -ge 1 -and $prop.Value -le 128)) {
+                    $errors.Add("AppSettings.json: RobocopyThreadsByTarget.$($prop.Name) must be between 1 and 128")
+                }
+            }
+        }
+    }
+
+    # ==================================================================
+    #  1b. MigrationProfiles/*.json - optional Exclusions block
+    # ==================================================================
+    $profileDir = Join-Path $configDir 'MigrationProfiles'
+    if (Test-Path $profileDir) {
+        foreach ($file in Get-ChildItem -Path $profileDir -Filter '*.json') {
+            $migrationProfile = Read-JsonConfig "MigrationProfiles/$($file.Name)"
+            if (-not $migrationProfile -or -not $migrationProfile.PSObject.Properties['Exclusions']) { continue }
+            foreach ($key in 'Directories', 'Files') {
+                $list = $migrationProfile.Exclusions.$key
+                if ($null -ne $list -and -not (Test-StringArray $list)) {
+                    $errors.Add("MigrationProfiles/$($file.Name): 'Exclusions.$key' must be an array of non-empty strings")
+                }
             }
         }
     }

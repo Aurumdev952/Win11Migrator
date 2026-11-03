@@ -18,17 +18,19 @@
     Pester tests for UserData and BrowserProfiles modules.
 #>
 
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
 
-Describe "UserData Module Tests" {
+Describe "UserData Module Tests" -Tag "Windows" {
 
     BeforeAll {
-        . "$ProjectRoot\Core\Initialize-Environment.ps1"
-        . "$ProjectRoot\Core\Write-MigrationLog.ps1"
+        $ProjectRoot = Split-Path $PSScriptRoot -Parent
+        . "$ProjectRoot/Core/Initialize-Environment.ps1"
+        . "$ProjectRoot/Core/Write-MigrationLog.ps1"
+        . "$ProjectRoot/Core/Invoke-Robocopy.ps1"
+        . "$ProjectRoot/Core/Get-MigrationExclusions.ps1"
         $script:MigratorRoot = $ProjectRoot
         $script:Config = Initialize-Environment -RootPath $ProjectRoot
-        Get-ChildItem "$ProjectRoot\Modules\UserData\*.ps1" | ForEach-Object { . $_.FullName }
-        Get-ChildItem "$ProjectRoot\Modules\BrowserProfiles\*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/UserData/*.ps1" | ForEach-Object { . $_.FullName }
+        Get-ChildItem "$ProjectRoot/Modules/BrowserProfiles/*.ps1" | ForEach-Object { . $_.FullName }
     }
 
     Context "Get-UserProfilePaths" {
@@ -40,12 +42,10 @@ Describe "UserData Module Tests" {
             $paths.ContainsKey('Downloads') | Should -Be $true
         }
 
-        It "Should return existing paths" {
+        It "Should return absolute paths" {
             $paths = Get-UserProfilePaths
             foreach ($key in @('Desktop', 'Documents')) {
-                if ($paths[$key]) {
-                    Test-Path $paths[$key] | Should -Be $true
-                }
+                [System.IO.Path]::IsPathRooted($paths[$key]) | Should -BeTrue -Because "$key resolves to '$($paths[$key])'"
             }
         }
 
@@ -65,28 +65,22 @@ Describe "UserData Module Tests" {
     }
 
     Context "Export-UserProfile" {
-        It "Should handle empty input gracefully" {
-            $tempDir = Join-Path $env:TEMP "Win11Migrator_Test_$(Get-Random)"
-            New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
-
-            try {
-                $result = Export-UserProfile -Items @() -OutputPath $tempDir
-                $result | Should -Not -BeNullOrEmpty -Because "Should return empty array, not null"
-            } catch {
-                # Acceptable if function doesn't handle empty gracefully
-            } finally {
-                Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
+        It "Should accept an empty selection without copying anything" {
+            Mock Invoke-Robocopy { }
+            $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "Win11Migrator_Test_$(Get-Random)"
+            { Export-UserProfile -Items @() -OutputDirectory $tempDir } | Should -Not -Throw
+            Should -Invoke Invoke-Robocopy -Times 0
         }
     }
 
     Context "Get-BrowserProfilePaths" {
-        It "Should return an array" {
+        # A fresh account (such as a CI runner) has never opened a browser, so there is no profile to find
+        It "Should return an array" -Skip:(-not (Test-Path "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default")) {
             $profiles = Get-BrowserProfilePaths
             $profiles | Should -Not -BeNullOrEmpty -Because "At least one browser should be installed"
         }
 
-        It "Should detect Edge on Windows 11" {
+        It "Should detect Edge on Windows 11" -Skip:(-not (Test-Path "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default")) {
             $profiles = Get-BrowserProfilePaths
             $edgeProfiles = $profiles | Where-Object { $_.Browser -eq 'Edge' }
             # Edge is pre-installed on Windows 11

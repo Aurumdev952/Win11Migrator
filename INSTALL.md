@@ -2,15 +2,10 @@
 
 ## Quick Install
 
-1. Download the latest release ZIP from [Releases](https://github.com/AuthorityGate/Win11Migrator/releases) or clone the repository:
+1. Download the latest `Win11Migrator-<version>-x64.msi` from [Releases](https://github.com/Aurumdev952/Win11Migrator/releases) and run it. Or use the portable `.exe`, or extract the portable `.zip`.
+2. Start **Win11Migrator** from the Start menu (zip: double-click `Win11Migrator.bat`).
 
-   ```
-   git clone https://github.com/AuthorityGate/Win11Migrator.git
-   ```
-
-2. Double-click `Win11Migrator.bat` to launch.
-
-That's it. No build step, no dependencies to install. The tool runs directly from the folder.
+Builds are not code-signed yet, so SmartScreen may ask for confirmation; see "Windows SmartScreen and Microsoft Defender" in the README.
 
 ---
 
@@ -20,14 +15,14 @@ That's it. No build step, no dependencies to install. The tool runs directly fro
 
 **Option A: Download ZIP**
 
-1. Go to https://github.com/AuthorityGate/Win11Migrator
+1. Go to https://github.com/Aurumdev952/Win11Migrator
 2. Click **Code** > **Download ZIP**
 3. Extract the ZIP to any location (e.g. `C:\Win11Migrator`)
 
 **Option B: Git Clone**
 
 ```powershell
-git clone https://github.com/AuthorityGate/Win11Migrator.git
+git clone https://github.com/Aurumdev952/Win11Migrator.git
 cd Win11Migrator
 ```
 
@@ -36,10 +31,10 @@ cd Win11Migrator
 If you received the source and want to create a distributable package:
 
 ```powershell
-.\Build.ps1
+.\build\Build-Release.ps1 -SkipMsi
 ```
 
-This creates `Build\Win11Migrator_v1.0.0.zip`. Extract that ZIP on any target machine.
+This creates the portable `.zip` and `.exe` in `dist\`, using the version in `Config\AppSettings.json`. Building the MSI as well needs the WiX CLI: `dotnet tool install --global wix --version 5.0.2`.
 
 ### Step 2: Verify Prerequisites
 
@@ -89,6 +84,17 @@ If not installed, get it from the [Microsoft Store](https://apps.microsoft.com/d
 
 ---
 
+## Both PCs on the Same Network (Fastest)
+
+1. On the **target** PC, run `Win11Migrator.bat` as Administrator and select **Receive**. Note the pairing code it shows.
+2. On the **source** PC, run `Win11Migrator.bat`, select **Export**, and on the transfer step choose **Another PC on this network**.
+3. Pick the target PC from the list (or type its name or IP address), enter the pairing code and click **Connect**, then **Next**.
+4. Leave both windows open. The target starts installing apps while files arrive, then restores everything on its own.
+
+No USB drive, cloud account or WinRM is needed. If the source PC is turned off or loses the network mid-way, run the export again and choose **Resume**; files already sent are skipped.
+
+---
+
 ## Running on the Source PC (Export)
 
 1. Copy or clone the Win11Migrator folder to the source PC.
@@ -96,8 +102,8 @@ If not installed, get it from the [Microsoft Store](https://apps.microsoft.com/d
 3. Select **Export**.
 4. The tool scans your PC. This takes 1-5 minutes depending on how many apps are installed.
 5. Review and select the apps, data, and settings you want to migrate.
-6. Choose a transfer method (USB, OneDrive, Google Drive, or custom folder).
-7. Wait for the export to complete.
+6. Choose a transfer method (another PC on the network, a domain PC's admin share, USB, OneDrive, Google Drive, a network share, or a custom folder).
+7. Wait for the export to complete. The package is written straight to that destination; the export refuses to start if it would not fit.
 
 The migration package is a folder named `Win11Migration_<COMPUTERNAME>_<timestamp>`. It contains a `manifest.json` and all exported data.
 
@@ -110,7 +116,7 @@ The migration package is a folder named `Win11Migration_<COMPUTERNAME>_<timestam
 3. Run `Win11Migrator.bat` as Administrator. **Admin is required on the target** for app installation.
 4. Select **Import**.
 5. Browse to the migration package folder (the one containing `manifest.json`), or select from auto-detected packages.
-6. Wait for the import to complete. App installations run sequentially and may take 10-30+ minutes depending on the number of apps.
+6. Wait for the import to complete. Apps install one at a time while your files are restored alongside them; this may take 10-30+ minutes depending on the number of apps.
 7. Review the completion report and manual install guide.
 8. **Restart your computer** to apply all changes.
 
@@ -134,8 +140,9 @@ After running, Win11Migrator creates:
 | Location | Contents |
 |---|---|
 | `Logs\` (next to Win11Migrator.ps1) | Timestamped log files for each session |
-| `MigrationPackage\` (next to Win11Migrator.ps1) | Local staging directory for export packages |
-| Transfer destination (USB/cloud/custom) | The final migration package for transport |
+| `MigrationPackage\` (next to Win11Migrator.ps1) | Packages exported with no transfer target, encrypted packages while they are built, and import reports for read-only packages |
+| Transfer destination (USB/cloud/share/folder) | `Win11Migrator\<package>` with a copy of the tool beside it |
+| `C:\Win11MigratorIncoming\` on a receiving PC | Packages received over the network; the files are moved into the profile during the restore |
 
 ---
 
@@ -162,6 +169,8 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ---
 
 ## Firewall and Network
+
+For **Receive mode**, the target PC adds two temporary inbound firewall rules, `Win11Migrator-Receive-SMB` (TCP 445) and `Win11Migrator-Receive-Discovery` (UDP 50717), and removes them when the transfer ends. If a third-party firewall blocks them, open those ports on the target while it receives, or type the target's IP address on the source instead of relying on discovery.
 
 Win11Migrator needs internet access on the **target PC** for:
 
