@@ -36,13 +36,19 @@ function Initialize-ImportSourcePage {
 
     $State.BtnNext.IsEnabled = $false
 
-    $loadManifest = {
-        param([string]$PkgPath)
+    # Click handlers run after this function returns, so the loader reads its controls from $State
+    # (like ReceivePage) instead of from variables that no longer exist by then
+    $State['ImportSourceUi'] = @{
+        PackagePath = $txtPackagePath; PanelInfo = $panelPackageInfo; SourceComputer = $txtSourceComputer
+        ExportDate = $txtExportDate; SourceOS = $txtSourceOS; AppCount = $txtAppCount; DataCount = $txtDataCount
+        SourceUser = $txtSourceUser
+    }
+    $State['LoadImportManifest'] = {
+        param([hashtable]$State, [string]$PkgPath)
+        $ui = $State.ImportSourceUi
 
-        # Defensive dot-source: ensure functions are available in closure scope
         . (Join-Path $State.MigratorRoot "Core\Write-MigrationLog.ps1")
         . (Join-Path $State.MigratorRoot "Core\Read-MigrationManifest.ps1")
-
         . (Join-Path $State.MigratorRoot "Core\Unprotect-MigrationPackage.ps1")
         $encryptedFile = Find-EncryptedPackage -Path $PkgPath
         if ($encryptedFile) {
@@ -78,14 +84,14 @@ function Initialize-ImportSourcePage {
             $State.SystemSettings = $manifest.SystemSettings
             $State.AppProfiles = if ($manifest.AppProfiles) { $manifest.AppProfiles } else { @() }
 
-            $txtPackagePath.Text = $PkgPath
-            $panelPackageInfo.Visibility = 'Visible'
-            $txtSourceComputer.Text = $manifest.SourceComputerName
-            $txtExportDate.Text = $manifest.ExportDate
-            $txtSourceOS.Text = $manifest.SourceOSVersion
-            $txtAppCount.Text = "$($manifest.Apps.Count) applications"
-            $txtDataCount.Text = "$($manifest.UserData.Count) folders, $($manifest.BrowserProfiles.Count) browser profiles, $($manifest.SystemSettings.Count) settings"
-            $txtSourceUser.Text = $manifest.SourceUserName
+            $ui.PackagePath.Text = $PkgPath
+            $ui.PanelInfo.Visibility = 'Visible'
+            $ui.SourceComputer.Text = $manifest.SourceComputerName
+            $ui.ExportDate.Text = $manifest.ExportDate
+            $ui.SourceOS.Text = $manifest.SourceOSVersion
+            $ui.AppCount.Text = "$(@($manifest.Apps).Count) applications"
+            $ui.DataCount.Text = "$(@($manifest.UserData).Count) folders, $(@($manifest.BrowserProfiles).Count) browser profiles, $(@($manifest.SystemSettings).Count) settings"
+            $ui.SourceUser.Text = $manifest.SourceUserName
 
             $State.BtnNext.IsEnabled = $true
             Write-MigrationLog -Message "Package loaded from $PkgPath" -Level Success
@@ -104,7 +110,7 @@ function Initialize-ImportSourcePage {
         $dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
         $dialog.Description = "Select the Win11Migrator migration package folder"
         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            & $loadManifest $dialog.SelectedPath
+            & $State.LoadImportManifest $State $dialog.SelectedPath
         }
     }.GetNewClosure())
 
@@ -156,7 +162,7 @@ function Initialize-ImportSourcePage {
                     $btn.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
                     $btn.Tag = $folder.FullName
                     $btn.Add_Click({
-                        & $loadManifest $this.Tag
+                        & $State.LoadImportManifest $State $this.Tag
                     }.GetNewClosure())
                     $null = $panelDetectedSources.Children.Add($btn)
                 }
