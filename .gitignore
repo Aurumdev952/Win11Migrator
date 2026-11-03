@@ -18,7 +18,6 @@ Config/AppSettings.local.json
 *.psm1.bak
 
 # IDE
-.vscode/
 .idea/
 *.code-workspace
 
@@ -34,3 +33,5 @@ desktop.ini
 
 # Release builds
 dist/
+config.bat
+node_modules
