@@ -88,13 +88,14 @@ function Start-ReceiveSession {
     .DESCRIPTION
         Creates a temporary local account whose password is derived from a fresh pairing code, a hidden
         share that only that account can write, inbound firewall rules for SMB and discovery, and a UDP
-        responder so the sending PC can find this one. The incoming folder sits on the profile volume
-        so the received files can be renamed into place instead of copied again.
+        responder so the sending PC can find this one. The incoming folder sits on the volume the files
+        will be restored to (RestoreRoot's, else the profile's) so they are renamed into place, not copied again.
         The session is recorded in the registry so a crash is cleaned up on the next start.
     #>
     [CmdletBinding()]
     param(
-        [string]$IncomingRoot = (Join-Path ([System.IO.Path]::GetPathRoot($env:USERPROFILE)) $script:ReceiveProtocol.FolderName),
+        [string]$RestoreRoot,
+        [string]$IncomingRoot = (Join-Path ([System.IO.Path]::GetPathRoot($(if ($RestoreRoot) { $RestoreRoot } else { $env:USERPROFILE }))) $script:ReceiveProtocol.FolderName),
         [string]$Version = $script:MigratorVersion
     )
 

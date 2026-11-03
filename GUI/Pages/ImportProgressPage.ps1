@@ -82,7 +82,7 @@ function Initialize-ImportProgressPage {
         # runspace's [BrowserProfile], [SystemSetting] or [MigrationManifest] parameters
         $manifest = Read-MigrationManifest -ManifestPath (Join-Path $State.PackagePath 'manifest.json')
         $result = Invoke-MigrationImport -PackagePath $State.PackagePath -Manifest $manifest -Progress $prog `
-            -AppWorker $State.AppWorker -MoveFromPackage:([bool]$State.MoveFromPackage)
+            -AppWorker $State.AppWorker -MoveFromPackage:([bool]$State.MoveFromPackage) -RestoreRoot $State.RestoreRoot
         $State.AppWorker = $null
         $State['CompletionReportPath'] = $result.CompletionReportPath
         $State['ManualReportPath'] = $result.ManualReportPath

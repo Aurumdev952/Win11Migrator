@@ -31,6 +31,10 @@
     The CLI action to perform (scan, export, import, validate, status).
 .PARAMETER PackagePath
     Path to a migration package for import/validate, or output path for export/backup.
+.PARAMETER RestoreTo
+    With import or receive: put the migrated user folders (Documents, Desktop, ...) under this folder,
+    for example D:\MigratedFiles, instead of the profile's own folders. Receive also stores the incoming
+    package on that drive.
 .PARAMETER Backup
     Run a headless backup of user profile and application profiles.
     Designed for integration with Windows Task Scheduler for weekly backups.
@@ -49,6 +53,9 @@
 .EXAMPLE
     .\Win11Migrator.ps1 -CLI receive
     On the new PC: shows a pairing code and restores whatever the old PC sends.
+.EXAMPLE
+    .\Win11Migrator.ps1 -CLI receive -RestoreTo D:\MigratedFiles
+    The same, but the files arrive and stay on D:.
 .EXAMPLE
     .\Win11Migrator.ps1 -CLI export -SendTo NEWPC -PairingCode ABCD-2345
     On the old PC: exports straight into the new PC waiting in receive mode.
@@ -77,6 +84,7 @@ param(
     [string]$ComparePath,
     [switch]$Resume,
     [switch]$MoveFromPackage,
+    [string]$RestoreTo,
     [string]$SendTo,
     [string]$PairingCode,
     [string[]]$ExcludeDir,
@@ -525,10 +533,10 @@ if ($CLI) {
             $selection = @{
                 Apps            = $apps
                 UserData        = $userData
-                BrowserProfiles = $browsers
+                BrowserProfiles = if ($script:Config.DefaultSelection.BrowserProfiles -ne $false) { $browsers } else { @() }
                 AppProfiles     = $appProfiles
-                SettingsFlags   = Get-AllSettingsFlags
-                IncludeAppData  = $true
+                SettingsFlags   = if ($script:Config.DefaultSelection.SystemSettings -ne $false) { Get-AllSettingsFlags } else { @{} }
+                IncludeAppData  = $script:Config.DefaultSelection.AppData -ne $false
                 Exclusions      = $exclusions
             }
             $requiredBytes = [long](($userData | Where-Object { -not $_.SkipCloudSync } | Measure-Object -Property SizeBytes -Sum).Sum)
@@ -626,7 +634,7 @@ if ($CLI) {
                 Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
                 Echo = -not $Silent
             })
-            $result = Invoke-MigrationImport -PackagePath $PackagePath -Manifest $manifest -Progress $progress -MoveFromPackage:$MoveFromPackage
+            $result = Invoke-MigrationImport -PackagePath $PackagePath -Manifest $manifest -Progress $progress -MoveFromPackage:$MoveFromPackage -RestoreRoot $RestoreTo
             foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
             try {
@@ -673,13 +681,14 @@ if ($CLI) {
                 Log  = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
                 Echo = -not $Silent
             })
-            $session = Start-ReceiveSession
+            $session = Start-ReceiveSession -RestoreRoot $RestoreTo
             $worker = $null
             $state = $null
             try {
                 Write-Host ""
                 Write-Host "  Pairing code:  $($session.Code)" -ForegroundColor Cyan
                 Write-Host "  This PC:       $($session.Computer)  ($($session.Addresses -join ', '))" -ForegroundColor Cyan
+                Write-Host "  Files go to:   $(if ($RestoreTo) { $RestoreTo } else { 'your user folders' })" -ForegroundColor Cyan
                 Write-Host "  On the old PC run:  .\Win11Migrator.ps1 -CLI export -SendTo $($session.Computer) -PairingCode $($session.Code)" -ForegroundColor DarkGray
                 Write-Host "  Waiting for the other PC... (Ctrl+C cancels)" -ForegroundColor Yellow
                 $lastPhase = $null
@@ -717,7 +726,7 @@ if ($CLI) {
 
             $manifest = Read-MigrationManifest -ManifestPath (Join-Path $state.PackagePath 'manifest.json')
             Write-Host "  Package received from $($manifest.SourceComputerName); restoring" -ForegroundColor Green
-            $result = Invoke-MigrationImport -PackagePath $state.PackagePath -Manifest $manifest -Progress $progress -AppWorker $worker -MoveFromPackage
+            $result = Invoke-MigrationImport -PackagePath $state.PackagePath -Manifest $manifest -Progress $progress -AppWorker $worker -MoveFromPackage -RestoreRoot $RestoreTo
             foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
             Write-Host "  Restore complete: $($result.Succeeded) restored, $($result.Failed) failed" -ForegroundColor Green
             if ($result.CompletionReportPath) { Write-Host "  Report: $($result.CompletionReportPath)" -ForegroundColor Cyan }

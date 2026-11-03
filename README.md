@@ -108,6 +108,7 @@ Win11Migrator.ps1 [-CLI <action>] [options]
 | `-Resume` | With `export`: continue an unfinished package from this PC instead of starting over |
 | `-ExcludeDir <names>`, `-ExcludeFile <patterns>` | Skip more folder names or file patterns, on top of the configured defaults |
 | `-Profile <name>` | Apply a migration profile from `Config\MigrationProfiles\` |
+| `-RestoreTo <folder>` | With `import` or `receive`: save the user folders under this folder instead of the profile |
 | `-MoveFromPackage` | With `import`: move files into place instead of copying (same volume only; consumes the package) |
 | `-Backup [-Incremental] [-BackupPath <path>]` | Headless backup; `-Incremental` refreshes one rolling folder |
 | `-ScheduleBackup` | Register a weekly incremental backup task |
@@ -121,14 +122,16 @@ Win11Migrator.ps1 [-CLI <action>] [options]
 
 When both PCs are on the same network, nothing needs to be carried between them.
 
-1. On the **new** PC, start Win11Migrator as administrator and choose **Receive**. It shows a pairing code such as `KQ7M-3XPA`.
+1. On the **new** PC, start Win11Migrator as administrator and choose **Receive**. Under **Save received files to**, keep the suggested folder (for example `D:\MigratedFiles` on the largest non-Windows drive), browse to another, or clear it to restore into your user folders. Click **Start receiving**. It shows a pairing code such as `KQ7M-3XPA`.
 2. On the **old** PC, choose **Export**. On the transfer step, pick **Another PC on this network**, select the new PC (or type its name or IP address), enter the code and click **Connect**.
 3. The old PC writes the package straight into the new PC, with SMB compression. As soon as the app list arrives, the new PC starts installing apps while files are still coming in.
 4. When the transfer finishes, the new PC moves the received folders into the profile (a rename on the same disk, not a second copy) and restores browsers and settings.
 
 The new PC opens a hidden share writable only by a temporary local account whose password is derived from the pairing code, plus temporary SMB and discovery (UDP 50717) firewall rules. All of these are removed when the transfer completes, when the window closes, or on the next start after a crash. It works on workgroup and domain PCs and needs no WinRM.
 
-From the command line: `Win11Migrator.ps1 -CLI receive` on the new PC, then `Win11Migrator.ps1 -CLI export -SendTo NEWPC -PairingCode KQ7M-3XPA` on the old one.
+The package is received on the drive of the chosen folder, so the final move is a rename rather than a second copy, and a small system partition does not need room for it. Each folder lands under the chosen folder by name (`D:\MigratedFiles\Documents`, `D:\MigratedFiles\Desktop`, ...). Browser profiles and settings, when included, still go to the user profile.
+
+From the command line: `Win11Migrator.ps1 -CLI receive -RestoreTo D:\MigratedFiles` on the new PC (omit `-RestoreTo` for the user folders), then `Win11Migrator.ps1 -CLI export -SendTo NEWPC -PairingCode KQ7M-3XPA` on the old one.
 
 ### Export (Source PC)
 
@@ -281,6 +284,7 @@ All settings are in **`Config/AppSettings.json`**:
   "ExcludeDirectories": ["node_modules", ".venv", "__pycache__", "..."],
   "MaxFileSizeMB": 4096,
   "MigrateApps": false,
+  "DefaultSelection": { "BrowserProfiles": false, "SystemSettings": false, "AppData": false },
   "EnableWinget": true,
   "EnableChocolatey": true,
   "EnableNinite": true,
@@ -309,6 +313,7 @@ All settings are in **`Config/AppSettings.json`**:
 | `ExcludeDirectories` | 17 names | Folder names excluded anywhere in the selected folders (`/XD`) |
 | `MaxFileSizeMB` | `4096` | Skip individual files larger than this |
 | `MigrateApps` | `false` | Discover, export and reinstall applications and their profiles. When `false`, the scan skips apps, the app selection page is hidden, and imports install nothing, even from a package that lists apps |
+| `DefaultSelection.*` | all `false` | Whether browser profiles, system settings and AppData start selected. All `false` means an export carries files only; each can still be ticked on the Data Selection page. USMT is also off (`USMT.Enabled`) because it migrates settings |
 | `Enable*` | all `true` | Toggle individual install methods on/off |
 | `SilentInstallTimeout` | `600` | Seconds before killing a hung installer process |
 | `BrowserProfiles.*` | all `true` | Toggle individual browser scanning |

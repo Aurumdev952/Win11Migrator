@@ -45,8 +45,8 @@ function Initialize-ExportProgressPage {
         BrowserProfiles = $State.BrowserProfiles
         AppProfiles     = $State.AppProfiles
         SettingsFlags   = @{}
-        IncludeAppData  = $true
-        UseUSMT         = [bool]($State.Config.USMTAvailable -and $State.Config.USMTPath)
+        IncludeAppData  = $State.Config.DefaultSelection.AppData -ne $false
+        UseUSMT         = [bool]($State.Config.USMTAvailable -and $State.Config.USMTPath -and $State.Config.USMT.Enabled -ne $false)
         Exclusions      = if ($State.Exclusions) { $State.Exclusions } else { Get-MigrationExclusions -Config $State.Config }
     }
     foreach ($flag in (Get-AllSettingsFlags).Keys) { $selection.SettingsFlags[$flag] = [bool]$State[$flag] }

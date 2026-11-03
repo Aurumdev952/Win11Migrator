@@ -269,7 +269,7 @@ function Initialize-DataSelectionPage {
     if ($State.BrowserProfiles -and $State.BrowserProfiles.Count -gt 0) {
         # Add Selected property if missing
         foreach ($profile in $State.BrowserProfiles) {
-            if (-not $profile.ContainsKey('Selected')) { $profile['Selected'] = $true }
+            if (-not $profile.ContainsKey('Selected')) { $profile['Selected'] = $State.Config.DefaultSelection.BrowserProfiles -ne $false }
         }
 
         foreach ($profile in $State.BrowserProfiles) {
@@ -298,19 +298,15 @@ function Initialize-DataSelectionPage {
     }
 
     # --- System Settings checkboxes ---
-    $State['IncludeWiFi'] = $true
-    $State['IncludePrinters'] = $true
-    $State['IncludeDrives'] = $true
-    $State['IncludeEnvVars'] = $true
-    $State['IncludeWinSettings'] = $true
-    $State['IncludeAccessibility'] = $true
-    $State['IncludeRegional'] = $true
-    $State['IncludeVPN'] = $true
-    $State['IncludeCertificates'] = $true
-    $State['IncludeODBC'] = $true
-    $State['IncludeFolderOptions'] = $true
-    $State['IncludeInputSettings'] = $true
-    $State['IncludePower'] = $true
+    $settingsDefault = $State.Config.DefaultSelection.SystemSettings -ne $false
+    foreach ($flag in 'IncludeWiFi', 'IncludePrinters', 'IncludeDrives', 'IncludeEnvVars', 'IncludeWinSettings', 'IncludeAccessibility',
+                      'IncludeRegional', 'IncludeVPN', 'IncludeCertificates', 'IncludeODBC', 'IncludeFolderOptions', 'IncludeInputSettings', 'IncludePower') {
+        $State[$flag] = $settingsDefault
+    }
+    foreach ($box in $ui.ChkWiFi, $ui.ChkPrinters, $ui.ChkDrives, $ui.ChkEnvVars, $ui.ChkWinSettings, $ui.ChkAccessibility, $ui.ChkRegional,
+                     $ui.ChkVPN, $ui.ChkCertificates, $ui.ChkODBC, $ui.ChkFolderOptions, $ui.ChkInputSettings, $ui.ChkPower) {
+        if ($box) { $box.IsChecked = $settingsDefault }
+    }
 
     # Annotate checkboxes with scanned counts
     if ($State.SystemSettings) {
