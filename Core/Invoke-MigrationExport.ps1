@@ -39,21 +39,39 @@ function New-MigrationPackageName {
 }
 
 function Read-TransferStatus {
+    # The sending PC rewrites transfer.json in place while the receiving PC polls it, so a read can land
+    # mid-write or while the file is briefly locked; both count as "no status this time", not an error.
     param([Parameter(Mandatory)][string]$PackagePath)
     $file = Join-Path $PackagePath 'transfer.json'
-    if (-not (Test-Path $file)) { return $null }
-    try { return Get-Content $file -Raw -ErrorAction Stop | ConvertFrom-Json } catch { return $null }
+    try {
+        $stream = [System.IO.FileStream]::new($file, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        try { $text = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8).ReadToEnd() } finally { $stream.Dispose() }
+        if (-not $text.Trim()) { return $null }
+        return $text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return $null
+    }
 }
 
 function Write-TransferStatus {
-    # Written via a temp file and rename so a reader on the other PC never sees half a document.
+    <#
+    .SYNOPSIS
+        Overwrites transfer.json in place. Replacing it (delete, then rename a temp file) left the file
+        "delete pending" over SMB while the receiver had it open, so the receiver got Access denied on every
+        poll and the sender's retries stalled robocopy. Readers tolerate a half-written file.
+    .PARAMETER Wait
+        Retry for up to 5 seconds. Only for the final Complete/Failed status; progress updates are
+        best-effort so they never hold up the copy.
+    #>
     param(
         [Parameter(Mandatory)][string]$PackagePath,
         [Parameter(Mandatory)][ValidateSet('InProgress', 'Complete', 'Failed')][string]$State,
         [string]$Phase = '',
         [long]$BytesTotal = 0,
         [long]$BytesDone = 0,
-        [string[]]$Errors = @()
+        [string[]]$Errors = @(),
+        [switch]$Wait
     )
     $status = [ordered]@{
         Version      = 1
@@ -66,15 +84,16 @@ function Write-TransferStatus {
         UpdatedUtc   = (Get-Date).ToUniversalTime().ToString('o')
     }
     $final = Join-Path $PackagePath 'transfer.json'
-    $temp = "$final.tmp"
-    $status | ConvertTo-Json | Set-Content -Path $temp -Encoding UTF8
-    # The receiving PC reads this file every half second; replacing it fails while a read holds it open
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($status | ConvertTo-Json))
+    $attempts = if ($Wait) { 20 } else { 1 }
     for ($attempt = 1; ; $attempt++) {
         try {
-            Move-Item -Path $temp -Destination $final -Force -ErrorAction Stop
+            $stream = [System.IO.FileStream]::new($final, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write,
+                ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+            try { $stream.SetLength(0); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
             return
         } catch {
-            if ($attempt -ge 20) { throw }
+            if ($attempt -ge $attempts) { throw }
             Start-Sleep -Milliseconds 250
         }
     }
@@ -387,7 +406,7 @@ function Invoke-MigrationExportToDestination {
         $result = Invoke-MigrationExport -PackagePath $packagePath -Selection $Selection -TargetKind $Destination.TargetKind -Progress $Progress
     } catch {
         # Tell a waiting receiver the transfer stopped instead of leaving it waiting
-        try { Write-TransferStatus -PackagePath $packagePath -State Failed -Phase ([string]$Progress.Phase) -Errors @($_.Exception.Message) } catch { }
+        try { Write-TransferStatus -PackagePath $packagePath -State Failed -Phase ([string]$Progress.Phase) -Errors @($_.Exception.Message) -Wait } catch { }
         throw
     }
     $errors = [System.Collections.Generic.List[string]]::new()
@@ -413,7 +432,7 @@ function Invoke-MigrationExportToDestination {
 
     if (-not $EncryptPassword) {
         $Progress['Phase'] = 'Export complete'
-        Write-TransferStatus -PackagePath $packagePath -State 'Complete' -Phase 'Complete' `
+        Write-TransferStatus -PackagePath $packagePath -State 'Complete' -Phase 'Complete' -Wait `
             -BytesTotal ([long]$Progress.BytesTotal) -BytesDone ([long]$Progress.BytesDone) -Errors $errors.ToArray()
     }
 

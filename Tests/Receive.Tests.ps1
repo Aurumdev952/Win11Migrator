@@ -116,6 +116,36 @@ Describe 'Get-IncomingPackageState' {
         $s.State | Should -Be 'Failed'
         $s.Errors | Should -Contain 'disk full'
     }
+
+    It 'lets the sender update the status while the receiver has the file open' {
+        $pkg = Join-Path $incoming 'Win11Migration_PC1_20261008_100000'
+        New-Item -ItemType Directory -Path $pkg | Out-Null
+        Write-TransferStatus -PackagePath $pkg -State InProgress -BytesTotal 100 -BytesDone 10
+        $held = [System.IO.FileStream]::new((Join-Path $pkg 'transfer.json'), [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            { Write-TransferStatus -PackagePath $pkg -State InProgress -BytesTotal 100 -BytesDone 70 } | Should -Not -Throw
+            (Get-IncomingPackageState -IncomingPath $incoming).BytesDone | Should -Be 70
+        } finally {
+            $held.Dispose()
+        }
+    }
+
+    It 'treats a half-written status file as still receiving instead of failing' {
+        $pkg = Join-Path $incoming 'Win11Migration_PC1_20261008_100000'
+        New-Item -ItemType Directory -Path $pkg | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $pkg 'transfer.json'), '{ "Version": 1, "State": "Compl')
+        $s = Get-IncomingPackageState -IncomingPath $incoming
+        $s.State | Should -Be 'Receiving'
+        $s.BytesTotal | Should -Be 0
+    }
+
+    It 'replaces a longer earlier status without leaving its tail behind' {
+        $pkg = Join-Path $incoming 'Win11Migration_PC1_20261008_100000'
+        New-Item -ItemType Directory -Path $pkg | Out-Null
+        Write-TransferStatus -PackagePath $pkg -State Failed -Errors @('a long error message that makes this version of the file longer')
+        Write-TransferStatus -PackagePath $pkg -State Complete -Wait
+        (Get-IncomingPackageState -IncomingPath $incoming).State | Should -Be 'Complete'
+    }
 }
 
 Describe 'UDP discovery' {

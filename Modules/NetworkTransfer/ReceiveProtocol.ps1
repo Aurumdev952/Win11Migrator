@@ -96,11 +96,8 @@ function Get-IncomingPackageState {
                                   BytesDone = 0L; BytesTotal = 0L; Phase = ''; Errors = @() }
     }
 
-    $status = $null
-    $statusFile = Join-Path $package.FullName 'transfer.json'
-    if (Test-Path -LiteralPath $statusFile) {
-        try { $status = Get-Content -LiteralPath $statusFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
-    }
+    $status = Read-TransferStatus -PackagePath $package.FullName
+    $manifestReady = try { Test-Path -LiteralPath (Join-Path $package.FullName 'manifest.json') -ErrorAction Stop } catch { $false }
     $state = switch ($status.State) {
         'Complete' { 'Complete' }
         'Failed'   { 'Failed' }
@@ -109,7 +106,7 @@ function Get-IncomingPackageState {
     return [PSCustomObject]@{
         State          = $state
         PackagePath    = $package.FullName
-        ManifestReady  = (Test-Path -LiteralPath (Join-Path $package.FullName 'manifest.json'))
+        ManifestReady  = [bool]$manifestReady
         SourceComputer = if ($status) { [string]$status.ComputerName } else { $null }
         BytesDone      = if ($status) { [long]$status.BytesDone } else { 0L }
         BytesTotal     = if ($status) { [long]$status.BytesTotal } else { 0L }
