@@ -204,7 +204,8 @@ function Invoke-Robocopy {
             param($line)
             $b = Get-RobocopyLineBytes $line
             if ($b -gt 0) { $Progress['BytesDone'] = [long]$Progress['BytesDone'] + $b }
-            if ($OnProgress -and $clock.ElapsedMilliseconds -ge 1000) {
+            # OnProgress writes the status file across the network; doing it often stalls robocopy's output
+            if ($OnProgress -and $clock.ElapsedMilliseconds -ge 3000) {
                 $clock.Restart()
                 & $OnProgress
             }

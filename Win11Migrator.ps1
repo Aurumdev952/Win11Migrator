@@ -302,7 +302,7 @@ if ($Backup) {
         Exclusions     = Get-MigrationExclusions -ExtraDirectories $ExcludeDir -ExtraFiles $ExcludeFile
     }
     $result = Invoke-MigrationExport -PackagePath $pkgPath -Selection $selection -Progress $progress
-    Write-TransferStatus -PackagePath $pkgPath -State Complete -Phase 'Complete' -BytesTotal ([long]$progress.BytesTotal) -BytesDone ([long]$progress.BytesDone) -Errors $result.Errors
+    Write-TransferStatus -PackagePath $pkgPath -State Complete -Phase 'Complete' -Wait -BytesTotal ([long]$progress.BytesTotal) -BytesDone ([long]$progress.BytesDone) -Errors $result.Errors
     foreach ($err in $result.Errors) { Write-Host "  WARNING: $err" -ForegroundColor Yellow }
 
     # Update registry with last backup info
