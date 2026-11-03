@@ -50,6 +50,7 @@ class UserDataItem {
     [string[]]$ExcludedDirs = @()  # Full paths the user unticked inside this folder
     [string[]]$ExcludedFiles = @()
     [int]$FailedFiles = 0          # Files robocopy could not copy (locked, in use, access denied)
+    [string]$ExportError = ''      # Robocopy's own error lines when the folder could not be copied
     [string]$ExportStatus        # Pending, Success, Failed, Skipped
     [string]$ImportStatus        # Pending, Success, Failed, Skipped
 }
